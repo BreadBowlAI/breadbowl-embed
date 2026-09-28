@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breadbowl-embed"
+version = "0.1.0a1"
+description = "BreadBowl routing-value embeddings and late-interaction retrieval"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.12"
+dependencies = [
+  "torch>=2.9,<3",
+  "transformers>=5.4,<6",
+  "huggingface-hub>=1.7,<2",
+  "safetensors>=0.7,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "build>=1", "ruff>=0.11"]
+notebook = ["jupyterlab>=4"]
+
+[project.scripts]
+breadbowl-export = "breadbowl_embed.export:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+breadbowl_embed = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

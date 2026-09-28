@@ -1,0 +1,55 @@
+{
+  "verified": true,
+  "scope": "CPU native-dtype smoke parity; not a BEIR rerun or GPU validation",
+  "queries": 2,
+  "documents": 4,
+  "max_absolute_differences": {
+    "query_routing": 0.0,
+    "document_routing": 0.0,
+    "query_values": 0.0,
+    "document_values": 0.0,
+    "combined_scores": 1.1920928955078125e-07,
+    "routing_scores": 1.1920928955078125e-07,
+    "value_scores": 1.4901161193847656e-08
+  },
+  "checkpoint_sha256": "ecbb14878fe8b6005b55c286efd1d168425b07d7c0e362d9a4226ee0566cc754",
+  "representation_id": "55478031b510e5e77730d57bd8d15d76275163517e38e1c73a7a8f9f7fe50dc0",
+  "rankings": [
+    [
+      {
+        "id": "0",
+        "score": 0.5888570547103882,
+        "routing_score": 0.63030606508255,
+        "value_score": 0.4645099937915802,
+        "document_index": 0,
+        "metadata": {}
+      },
+      {
+        "id": "1",
+        "score": 0.2848447561264038,
+        "routing_score": 0.3025164008140564,
+        "value_score": 0.23182979226112366,
+        "document_index": 1,
+        "metadata": {}
+      }
+    ],
+    [
+      {
+        "id": "0",
+        "score": 0.5336252450942993,
+        "routing_score": 0.5116094350814819,
+        "value_score": 0.5996726751327515,
+        "document_index": 0,
+        "metadata": {}
+      },
+      {
+        "id": "1",
+        "score": 0.484721839427948,
+        "routing_score": 0.46581190824508667,
+        "value_score": 0.5414516925811768,
+        "document_index": 1,
+        "metadata": {}
+      }
+    ]
+  ]
+}
