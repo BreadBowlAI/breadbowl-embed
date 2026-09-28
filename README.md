@@ -8,9 +8,11 @@ This repository contains the model implementation and local research tools. Brea
 
 ## Install
 
-Use Python 3.12 or newer. From a checkout of this repository:
+Use Python 3.12 or newer. Clone the public repository:
 
 ```bash
+git clone https://github.com/BreadBowlAI/breadbowl-embed.git
+cd breadbowl-embed
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install .
