@@ -1,0 +1,34 @@
+{
+  "verified": true,
+  "repository": "dotproductx/breadbowl-embed-v1.2-preview",
+  "revision": "d55da971bc24b896a441b3ad466f2dc5d6178d73",
+  "public_unauthenticated_download": true,
+  "representation_id": "55478031b510e5e77730d57bd8d15d76275163517e38e1c73a7a8f9f7fe50dc0",
+  "scope": "CPU inference smoke test from a fresh Hugging Face cache using the installed package; not a benchmark rerun",
+  "results": [
+    {
+      "id": "0",
+      "score": 0.7085551619529724,
+      "routing_score": 0.8480271697044373,
+      "value_score": 0.29013925790786743,
+      "document_index": 0,
+      "metadata": {}
+    },
+    {
+      "id": "1",
+      "score": 0.09952478855848312,
+      "routing_score": 0.19882866740226746,
+      "value_score": -0.19838681817054749,
+      "document_index": 1,
+      "metadata": {}
+    },
+    {
+      "id": "2",
+      "score": -0.10440436750650406,
+      "routing_score": -0.04584810137748718,
+      "value_score": -0.2800731658935547,
+      "document_index": 2,
+      "metadata": {}
+    }
+  ]
+}

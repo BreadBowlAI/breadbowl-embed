@@ -4,7 +4,7 @@ A small Python toolkit for trying BreadBowl's routing–value embedding architec
 
 This repository contains the model implementation and local research tools. BreadBowl's hosted service is a separate product.
 
-**Preview status:** the step-4000 KL+replay checkpoint has been exported and checked against the research implementation locally. The [Hugging Face model page](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview) must contain `manifest.json`, `model.safetensors`, `config.json`, `backbone/`, and `tokenizer/` before remote loading will work. A paper-only repository is not a runnable release. This package is not yet published on PyPI.
+**Research preview:** the step-4000 KL+replay weights are available on [Hugging Face](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview). Anonymous download and CPU inference have been verified from a fresh cache. Install the toolkit from this repository; it is not yet published on PyPI.
 
 ## Install
 
@@ -22,7 +22,7 @@ CPU is the default. The current release was smoke-tested with Python 3.12, PyTor
 
 ## Rerank a few passages
 
-Set `BREADBOWL_MODEL` to a local exported model directory until the weights are published on Hugging Face.
+The example downloads the public weights automatically. Optionally set `BREADBOWL_MODEL` to a local exported model directory.
 
 ```python
 import os
