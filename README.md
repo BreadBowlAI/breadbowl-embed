@@ -18,7 +18,7 @@ source .venv/bin/activate
 python -m pip install .
 ```
 
-CPU is the default. The current release was smoke-tested with Python 3.12, PyTorch 2.11 and Transformers 5.4 on CPU; the broader dependency ranges are not a tested compatibility matrix. CUDA can be requested with `device="cuda"`, but this release has not been validated on GPU. Start with a small batch. The Qwen backbone can use its PyTorch fallback without optional accelerated kernels.
+CPU is the default. The current release was smoke-tested with Python 3.12, PyTorch 2.11 and Transformers 5.4 on CPU; the preview pins its core dependencies to the tested versions. CUDA can be requested with `device="cuda"`, but this release has not been validated on GPU. Start with a small batch. The Qwen backbone can use its PyTorch fallback without optional accelerated kernels.
 
 ## Rerank a few passages
 
