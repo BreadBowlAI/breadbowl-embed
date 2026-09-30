@@ -9,3 +9,5 @@ The offline unit suite checks independent scoring equations and gradients, prese
 The distributable wheel was installed into a separate virtual environment using the existing machine dependencies. All notebook code cells ran against the real exported checkpoint through that installed package. This validates the wheel layout and example code; it is not a clean-machine dependency installation test.
 
 Public Hub revision `d55da971bc24b896a441b3ad466f2dc5d6178d73` was downloaded without authentication into a fresh cache and loaded through the installed toolkit. CPU reranking passed and the representation identifier matched the locally verified export. See `hub-verification.json`. The clean Linux CI installation also passes all 15 tests with the pinned preview dependencies.
+
+The released checkpoint also passed a small Apple Silicon MPS inference test with PyTorch 2.11. Both native precision and float32 ran with automatic CPU fallback disabled and ranked the relevant passage first. Encoding ran on MPS; the convenience API returned slots to CPU for scoring. This does not establish GPU/CPU numerical parity, CUDA support, throughput, or memory behavior at scale.
