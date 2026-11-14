@@ -1,26 +1,33 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "breadbowl-embed"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "BreadBowl routing-value embeddings and late-interaction retrieval"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+# Bounds are the two stacks the suite and the release checks were run on (docs/validation.md):
+# torch 2.11.0 / transformers 5.4.0 / huggingface-hub 1.8.0 / safetensors 0.7.0 / numpy 2.5 and
+# torch 2.14.1 / transformers 5.17.0 / huggingface-hub 1.33.0 / safetensors 0.8.0 / numpy 1.26.
 dependencies = [
-  "torch==2.11.0",
-  "transformers==5.4.0",
-  "huggingface-hub==1.8.0",
-  "safetensors==0.7.0",
+  "torch>=2.11,<2.15",
+  "transformers>=5.4,<5.18",
+  "huggingface-hub>=1.8,<2",
+  "safetensors>=0.7,<0.9",
+  "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
+faiss = ["faiss-cpu>=1.8"]
 dev = ["pytest>=7", "build>=1", "ruff>=0.11"]
 notebook = ["jupyterlab>=4"]
 
 [project.scripts]
+breadbowl-embed = "breadbowl_embed.cli:main"
 breadbowl-export = "breadbowl_embed.export:main"
 
 [tool.setuptools.packages.find]
@@ -31,3 +38,4 @@ breadbowl_embed = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["parity: release gates that need real weights; skipped unless their files are supplied"]

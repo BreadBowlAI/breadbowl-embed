@@ -1,0 +1,194 @@
+{
+  "scope": "CPU parity of the release against the research loader on fixed texts; not a benchmark rerun",
+  "compute_dtype": "float32",
+  "queries": 20,
+  "documents": 20,
+  "batch_size": 8,
+  "reference": {
+    "step": 5152,
+    "loaded_parameter_dtypes": [
+      "float32"
+    ],
+    "compute_dtype": "float32",
+    "tokenizer_length": 248078,
+    "padding_side": "right",
+    "backbone_class": "Qwen3_5Model",
+    "torch": "2.14.1",
+    "transformers": "5.17.0",
+    "loss": {
+      "qk_mode": "logmeanexp",
+      "tau_k": 0.02,
+      "tau_v": 0.1,
+      "value_mix": 0.25
+    },
+    "preprocessing": {
+      "query_format": "{instruction}\nQuery: {query}",
+      "document_format": "{text}",
+      "default_instruction": "Retrieve relevant documents.",
+      "max_query_length": 128,
+      "max_document_length": 384
+    },
+    "loaded_backbone_torch_dtype": "float32"
+  },
+  "release": {
+    "representation_id": "12fd9e4fee2e2e64a4fbdb8df15372f7e42a5c9187edf351d6fbc981af36bd94",
+    "provenance": {
+      "backbone_class": "Qwen3_5TextModel",
+      "base_model": {
+        "repo": "Qwen/Qwen3.5-0.8B-Base",
+        "revision": "a9a407bcae463285164cc9133995c515379cebe5"
+      },
+      "checkpoint_sha256": "c416e3b264f0c756ea96fff7a6a0eec93859747c23d6677ecca0afd02cf9084c",
+      "exported_with": {
+        "breadbowl_embed": "0.2.0a1",
+        "torch": "2.14.1",
+        "transformers": "5.17.0"
+      },
+      "parameter_dtypes": [
+        "float32"
+      ],
+      "removed": {
+        "jepa_sentinel": {
+          "embedding_rows": 1,
+          "learned_offset": true,
+          "token": "<jepa_mask>",
+          "token_id": 248077
+        },
+        "non_text_backbone": {
+          "modules": [
+            "visual"
+          ],
+          "parameters": 100592896
+        }
+      },
+      "step": 5152
+    },
+    "breadbowl_embed": "0.2.0a1",
+    "torch": "2.14.1",
+    "transformers": "5.17.0"
+  },
+  "token_counts": {
+    "queries": [
+      14,
+      14,
+      15,
+      14,
+      18,
+      15,
+      14,
+      8,
+      22,
+      19,
+      26,
+      15,
+      22,
+      15,
+      28,
+      8,
+      128,
+      19,
+      11,
+      13
+    ],
+    "documents": [
+      11,
+      16,
+      8,
+      13,
+      20,
+      8,
+      19,
+      15,
+      18,
+      23,
+      22,
+      22,
+      16,
+      26,
+      25,
+      1,
+      384,
+      18,
+      18,
+      23
+    ],
+    "queries_truncated": 1,
+    "documents_truncated": 1
+  },
+  "research_batch8_vs_alone_max_final_score_difference": 6.183981895446777e-07,
+  "tolerance": 1e-05,
+  "max_absolute_differences": {
+    "query_routing_normalised": 0.0,
+    "document_routing_normalised": 0.0,
+    "query_value": 0.0,
+    "document_value": 0.0,
+    "query_attention": 0.0,
+    "document_attention": 0.0,
+    "final_scores": 1.1920928955078125e-07,
+    "routing_scores_R": 1.1920928955078125e-07,
+    "value_scores_V": 8.940696716308594e-08,
+    "document_routing_raw": 0.0
+  },
+  "default_batch_size_1_max_absolute_differences": {
+    "query_routing_normalised": 0.0,
+    "query_value": 0.0,
+    "document_routing_normalised": 0.0,
+    "document_value": 0.0,
+    "final_scores": 1.1920928955078125e-07
+  },
+  "explain_identities_max_abs": {
+    "final_minus_mix": 3.725290298461914e-08,
+    "mean_contribution_minus_R": 0.0,
+    "mean_value_cosine_minus_V": 0.0,
+    "explain_final_minus_score": 0.0
+  },
+  "input_id_mismatches": [],
+  "rankings_identical": true,
+  "public_helpers": {
+    "score_routing_bit_identical": true,
+    "tokenize_matches_encode_and_research": true,
+    "display_strings_join_to_decoded_input": true
+  },
+  "search": {
+    "exact_top10_equal_to_research_bruteforce": true,
+    "slot_shortlist_128/1024/100_paper_equal_to_research_pipeline": true,
+    "slot_shortlist_512/1024/100_default_equal_to_research_pipeline": true,
+    "slot_shortlist_16/6/4_equal_to_research_pipeline": true
+  },
+  "search_pipelines": {
+    "slot_shortlist_128/1024/100_paper": {
+      "max_abs_score_difference": 1.1920928955078125e-07,
+      "mean_results_per_query": 13.85,
+      "mean_shortlist_per_query": 13.85
+    },
+    "slot_shortlist_512/1024/100_default": {
+      "max_abs_score_difference": 1.1920928955078125e-07,
+      "mean_results_per_query": 20.0,
+      "mean_shortlist_per_query": 20.0
+    },
+    "slot_shortlist_16/6/4": {
+      "max_abs_score_difference": 1.1920928955078125e-07,
+      "mean_results_per_query": 1.95,
+      "mean_shortlist_per_query": 2.05
+    }
+  },
+  "sentinel_probe_not_gated": [
+    {
+      "research_tokens": 15,
+      "release_tokens": 18,
+      "same_input_ids": false,
+      "routing_normalised_max_diff": 0.2695983648300171,
+      "value_max_diff": 2.8230104446411133
+    }
+  ],
+  "gate": {
+    "input_ids_identical": true,
+    "tensors_within_tolerance": true,
+    "default_batch_size_within_tolerance": true,
+    "explain_identities_within_tolerance": true,
+    "rankings_identical": true,
+    "public_helpers_consistent": true,
+    "search_matches_research": true
+  },
+  "passed": true
+}
