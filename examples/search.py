@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from breadbowl_embed import BreadBowl, Index
 
-model = BreadBowl.from_pretrained(os.environ.get("BREADBOWL_MODEL", "dotproductx/breadbowl-embed-v1.2-preview"))
+model = BreadBowl.from_pretrained(os.environ.get("BREADBOWL_MODEL", "dotproductx/breadbowl-embed-v1.3"))
 passages = ["Octopuses have three hearts.", "The Pacific is Earth's largest ocean.",
             "Plants use sunlight during photosynthesis."]
 index = model.index(model.encode_documents(passages), ids=["octopus", "ocean", "plants"])

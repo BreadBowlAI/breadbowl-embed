@@ -1,0 +1,319 @@
+# Build, check, test and publish the three packages of this repository.
+#
+#   tag v<version>                 breadbowl-embed (repository root)  -> PyPI "breadbowl-embed"
+#   tag sdk-python-v<version>      sdks/python                        -> PyPI "breadbowl"
+#   tag sdk-typescript-v<version>  sdks/typescript                    -> npm  "@breadbowl/embed"
+#
+# A tag publishes only when <version> equals the version inside the built package. A manual run
+# (Actions > release > Run workflow) builds, checks and tests one package and never publishes.
+# Publishing uses OIDC trusted publishing (no stored tokens); the one-time setup on pypi.org,
+# npmjs.com and in the repository settings is in docs/publishing-setup.md.
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'sdk-python-v*'
+      - 'sdk-typescript-v*'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to build, check and test (a manual run does not publish)
+        type: choice
+        options: [library, sdk-python, sdk-typescript]
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---- breadbowl-embed (library) ------------------------------------------------------------------
+  library-build:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.package == 'library')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - name: Check the version against the tag
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'EOF'
+          import os, pathlib, re, sys, zipfile
+          dist = pathlib.Path("dist")
+          wheels, sdists = sorted(dist.glob("*.whl")), sorted(dist.glob("*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1:
+              sys.exit(f"expected one wheel and one sdist, found {wheels + sdists}")
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              metadata = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA"))
+              version = re.search(r"^Version: (\S+)$", wheel.read(metadata).decode(), re.M).group(1)
+              module = wheel.read("breadbowl_embed/_version.py").decode()
+          module_version = re.search(r"__version__ = [\"']([^\"']+)[\"']", module).group(1)
+          if module_version != version:
+              sys.exit(f"breadbowl_embed.__version__ is {module_version} but the package metadata says {version}")
+          if not sdists[0].name.endswith(f"-{version}.tar.gz"):
+              sys.exit(f"sdist {sdists[0].name} does not carry version {version}")
+          if os.environ["REF_TYPE"] == "tag" and os.environ["REF_NAME"] != f"v{version}":
+              sys.exit(f"tag {os.environ['REF_NAME']} does not match the package version {version} (expected v{version})")
+          print(f"breadbowl-embed {version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"version={version}\n")
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: library-dist
+          path: dist/
+          if-no-files-found: error
+
+  # The test job of tests.yml, run against the built wheel instead of the source tree.
+  library-test:
+    needs: library-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in step with tests.yml: the lower and upper dependency bounds.
+        stack:
+          - {torch: "2.11.0", transformers: "5.4.0", hub: "1.8.0", safetensors: "0.7.0"}
+          - {torch: "2.14.1", transformers: "5.17.0", hub: "1.33.0", safetensors: "0.8.0"}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: library-dist
+          path: dist/
+      - run: python -m pip install "torch==${{ matrix.stack.torch }}" --index-url https://download.pytorch.org/whl/cpu
+      - run: >-
+          python -m pip install "transformers==${{ matrix.stack.transformers }}"
+          "huggingface-hub==${{ matrix.stack.hub }}" "safetensors==${{ matrix.stack.safetensors }}"
+          "$(ls dist/*.whl)[dev,faiss]"
+      - name: Tests import the installed wheel, not src/
+        run: python -c "import breadbowl_embed, sys; sys.exit('src' in breadbowl_embed.__file__.split('/'))"
+      - run: python -m pytest
+
+  library-publish:
+    if: github.event_name == 'push'
+    needs: [library-build, library-test]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/breadbowl-embed/${{ needs.library-build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: library-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ---- breadbowl (Python SDK, sdks/python) --------------------------------------------------------
+  sdk-python-build:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref_name, 'sdk-python-v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.package == 'sdk-python')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - name: Check the version against the tag
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'EOF'
+          import os, pathlib, re, sys, zipfile
+          dist = pathlib.Path("dist")
+          wheels, sdists = sorted(dist.glob("*.whl")), sorted(dist.glob("*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1:
+              sys.exit(f"expected one wheel and one sdist, found {wheels + sdists}")
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              metadata = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA"))
+              text = wheel.read(metadata).decode()
+          name = re.search(r"^Name: (\S+)$", text, re.M).group(1)
+          version = re.search(r"^Version: (\S+)$", text, re.M).group(1)
+          if name != "breadbowl":
+              sys.exit(f"expected the PyPI project 'breadbowl', the wheel is {name!r}")
+          if not sdists[0].name.endswith(f"-{version}.tar.gz"):
+              sys.exit(f"sdist {sdists[0].name} does not carry version {version}")
+          tag = os.environ["REF_NAME"]
+          if os.environ["REF_TYPE"] == "tag" and tag != f"sdk-python-v{version}":
+              sys.exit(f"tag {tag} does not match the package version {version} (expected sdk-python-v{version})")
+          print(f"breadbowl {version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"version={version}\n")
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-python-dist
+          path: sdks/python/dist/
+          if-no-files-found: error
+
+  # The sdk-python job of tests.yml, with the built wheel installed.
+  sdk-python-test:
+    needs: sdk-python-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.15']
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-python-dist
+          path: sdks/python/dist/
+      - run: python -m pip install "$(ls dist/*.whl)[dev]"
+      - run: python scripts/generate_types.py --check
+      - run: ruff check . && ruff format --check .
+      - run: mypy
+      - run: python -m pytest
+
+  sdk-python-publish:
+    if: github.event_name == 'push'
+    needs: [sdk-python-build, sdk-python-test]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-sdk-python
+      url: https://pypi.org/project/breadbowl/${{ needs.sdk-python-build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-python-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ---- @breadbowl/embed (TypeScript SDK, sdks/typescript) -----------------------------------------
+  sdk-typescript-build:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref_name, 'sdk-typescript-v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.package == 'sdk-typescript')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: sdks/typescript/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run generate:check
+      - run: pnpm run build
+      - name: Check the version against the tag
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if [ "$name" != "@breadbowl/embed" ]; then
+            echo "expected the npm package @breadbowl/embed, package.json names $name"; exit 1
+          fi
+          if [ "$REF_TYPE" = "tag" ] && [ "$REF_NAME" != "sdk-typescript-v$version" ]; then
+            echo "tag $REF_NAME does not match the package version $version (expected sdk-typescript-v$version)"; exit 1
+          fi
+          echo "$name $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Pack the tarball that will be published
+        id: pack
+        run: |
+          mkdir -p ../../npm-dist
+          tarball=$(npm pack --pack-destination ../../npm-dist | tail -n 1)
+          tar -tzf "../../npm-dist/$tarball"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-typescript-dist
+          path: npm-dist/
+          if-no-files-found: error
+
+  # The sdk-typescript job of tests.yml.
+  sdk-typescript-test:
+    needs: sdk-typescript-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: sdks/typescript/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test
+
+  sdk-typescript-publish:
+    if: github.event_name == 'push'
+    needs: [sdk-typescript-build, sdk-typescript-test]
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@breadbowl/embed/v/${{ needs.sdk-typescript-build.outputs.version }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      # Trusted publishing needs npm 11.5.1 or newer (and Node 22.14 or newer).
+      - run: npm install -g npm@11
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-typescript-dist
+          path: npm-dist/
+      # OIDC trusted publishing: no token. Provenance is attested for public packages published this way;
+      # --provenance makes it explicit. --access public is needed for the first publish of a scoped package.
+      - run: npm publish "npm-dist/${{ needs.sdk-typescript-build.outputs.tarball }}" --provenance --access public

@@ -1,0 +1,10 @@
+# The sdist holds the library (src/), its unit tests, README, LICENSE and pyproject.toml. Documentation,
+# notebooks, examples, release tools and the hosted-API SDKs (sdks/) stay in the repository.
+graft tests
+prune sdks
+prune docs
+prune notebooks
+prune examples
+prune tools
+prune .github
+global-exclude *.py[cod] __pycache__ .DS_Store *.so

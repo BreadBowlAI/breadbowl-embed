@@ -103,7 +103,7 @@ Reranking from cached vectors is not unique to this design: ColBERT-style models
 
 ## Quick start
 
-Requires **Python 3.12+**. Install the toolkit from GitHub; it is not published on PyPI:
+Requires **Python 3.12+**. `pip install breadbowl-embed` works once the package is published on PyPI; until then, install the toolkit from GitHub:
 
 ```bash
 python -m pip install "git+https://github.com/BreadBowlAI/breadbowl-embed.git"

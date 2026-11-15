@@ -4,12 +4,33 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breadbowl-embed"
-version = "0.2.0a1"
-description = "BreadBowl routing-value embeddings and late-interaction retrieval"
+version = "0.2.0"
+description = "BreadBowl routing-value slot embeddings: encode, score, index and search, plus research tools to inspect the model (attention maps, score decomposition, interventions, diagnostics)"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
+authors = [{ name = "BreadBowl AI" }]
+keywords = [
+  "retrieval", "information-retrieval", "embeddings", "multi-vector", "late-interaction", "reranking",
+  "semantic-search", "interpretability", "attention", "pytorch", "transformers",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Topic :: Text Processing :: Indexing",
+  "Typing :: Typed",
+]
 # Bounds are the two stacks the suite and the release checks were run on (docs/validation.md):
 # torch 2.11.0 / transformers 5.4.0 / huggingface-hub 1.8.0 / safetensors 0.7.0 / numpy 2.5 and
 # torch 2.14.1 / transformers 5.17.0 / huggingface-hub 1.33.0 / safetensors 0.8.0 / numpy 1.26.
@@ -23,8 +44,19 @@ dependencies = [
 
 [project.optional-dependencies]
 faiss = ["faiss-cpu>=1.8"]
-dev = ["pytest>=7", "build>=1", "ruff>=0.11"]
-notebook = ["jupyterlab>=4"]
+viz = ["matplotlib>=3.8"]
+notebook = ["jupyterlab>=4", "matplotlib>=3.8"]
+mteb = ["mteb>=2.0.5,<3"]
+# Every runtime extra except mteb, which brings a large dataset stack; install it on its own.
+all = ["breadbowl-embed[faiss,viz,notebook]"]
+dev = ["pytest>=7", "build>=1", "twine>=5", "ruff>=0.11", "matplotlib>=3.8", "pytrec-eval-terrier>=0.5"]
+
+[project.urls]
+Homepage = "https://github.com/BreadBowlAI/breadbowl-embed"
+Repository = "https://github.com/BreadBowlAI/breadbowl-embed"
+Documentation = "https://github.com/BreadBowlAI/breadbowl-embed/tree/main/docs"
+Issues = "https://github.com/BreadBowlAI/breadbowl-embed/issues"
+"Model card" = "https://huggingface.co/dotproductx/breadbowl-embed-v1.3"
 
 [project.scripts]
 breadbowl-embed = "breadbowl_embed.cli:main"
@@ -34,8 +66,11 @@ breadbowl-export = "breadbowl_embed.export:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-breadbowl_embed = ["py.typed"]
+breadbowl_embed = ["py.typed", "research/_static/*.css", "research/_static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["parity: release gates that need real weights; skipped unless their files are supplied"]
+markers = [
+  "parity: release gates that need real weights; skipped unless their files are supplied",
+  "real_model: research-toolkit checks on real weights; skipped unless BREADBOWL_TEST_MODEL is set",
+]

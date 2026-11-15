@@ -82,3 +82,11 @@ def test_tokenize_and_release_commands(capsys, tiny_qwen, tmp_path):
     first, second = run(capsys, "tokenize", "--model", tmp_path / "release", "--kind", "document", "--input", texts)
     assert [t["text"] for t in first["tokens"]] == ["fish", " water"] and not first["truncated"]
     assert second["truncated"] and second["token_count"] == 16 and second["untruncated_token_count"] == 20
+
+
+def test_evaluate_command_is_wired(capsys, tmp_path):
+    (tmp_path / "qrels.txt").write_text("q1 0 a 1\nq1 0 b 0\n")
+    (tmp_path / "run.txt").write_text("q1 Q0 b 1 2.0 x\nq1 Q0 a 2 1.0 x\n")
+    [row] = run(capsys, "evaluate", "metrics", "--qrels", tmp_path / "qrels.txt", "--run", tmp_path / "run.txt",
+                "--metrics", "mrr@10")
+    assert row["run"] == "run.txt" and "mrr@10" in json.dumps(row)

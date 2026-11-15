@@ -1,4 +1,4 @@
-"""breadbowl-embed: export, encode, index, search, explain and info from the command line.
+"""breadbowl-embed: export, encode, index, search, explain, info, inspect and evaluate from the command line.
 
 Inputs: a .jsonl file with one object per line ({"id": ..., "text": ...}; queries may use
 "query" and "instruction"; documents may carry "metadata"), or a plain text file with one
@@ -287,6 +287,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--instruction")
     p.add_argument("--top-tokens", type=int, default=5)
     p.set_defaults(handler=cmd_explain)
+
+    from .research._cli import add_inspect_parser
+    add_inspect_parser(commands, _model_options, {"read_items": _read_items, "load_model": _load_model,
+                                                  "query_instructions": _query_instructions})
+
+    from .evaluation import cli as evaluation_cli
+    p = commands.add_parser("evaluate", help="Evaluate retrieval and reranking (BEIR-layout data, TREC runs)")
+    evaluation_cli.add_arguments(p)
+    p.set_defaults(handler=evaluation_cli.run)
     return parser
 
 

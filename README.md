@@ -4,37 +4,43 @@
 
 BreadBowl represents each passage as 16 routing–value slots. Routing vectors find relevant information; the query then reads a weighted combination of stored values to refine the ranking. This lets future queries use cached document representations without another backbone pass over the candidate text or a separate cross-encoder.
 
-This repository provides the Python toolkit for trying and inspecting that architecture. See the [model card and evaluation](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview) for the research motivation and results.
+This repository provides the Python toolkit for trying and inspecting that architecture. See the [model card and evaluation](https://huggingface.co/dotproductx/breadbowl-embed-v1.3) for the research motivation and results.
 
 This repository contains the model implementation and local research tools, and the client SDKs for BreadBowl's hosted API. The hosted service itself is a separate product.
 
-**Research preview:** the step-4000 KL+replay weights (v1.2-preview) are available on [Hugging Face](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview). Anonymous download and CPU inference have been verified from a fresh cache. The v1.3 (step 5152) release format, exporter and parity gate are in this repository; its weights are not published yet. Install the toolkit from this repository; it is not yet published on PyPI.
+**Weights:** v1.3 (step 5152) is on Hugging Face at [dotproductx/breadbowl-embed-v1.3](https://huggingface.co/dotproductx/breadbowl-embed-v1.3) (tag `v1.3.0`); the earlier step-4000 [v1.2-preview](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview) still loads. `pip install breadbowl-embed` works once the package is published on PyPI; until then, install the toolkit from this repository.
 
 ## Which package do I need?
 
 | Package | Use it to | Where |
 |---|---|---|
-| `breadbowl-embed` (Python, `import breadbowl_embed`) | Run the model yourself: encode, score, index and search locally with PyTorch. The rest of this README is about this package. | repository root ([`src/breadbowl_embed`](src/breadbowl_embed)) |
-| `breadbowl` (Python, `import breadbowl`) | Call the hosted BreadBowl Embed API (`bb-embed` v1.3) over HTTP. Depends only on `httpx`; no model, no PyTorch. | [`sdks/python`](sdks/python) |
-| `@breadbowl/embed` (TypeScript/JavaScript) | The same HTTP client for Node 18+, Bun, Deno and browsers. No runtime dependencies. | [`sdks/typescript`](sdks/typescript) |
+| `breadbowl-embed` (Python, `import breadbowl_embed`) | Run the model yourself: encode, score, index and search locally with PyTorch. The rest of this README is about this package. | repository root ([`src/breadbowl_embed`](https://github.com/BreadBowlAI/breadbowl-embed/tree/main/src/breadbowl_embed)) |
+| `breadbowl` (Python, `import breadbowl`) | Call the hosted BreadBowl Embed API (`bb-embed` v1.3) over HTTP. Depends only on `httpx`; no model, no PyTorch. | [`sdks/python`](https://github.com/BreadBowlAI/breadbowl-embed/tree/main/sdks/python) |
+| `@breadbowl/embed` (TypeScript/JavaScript) | The same HTTP client for Node 18+, Bun, Deno and browsers. No runtime dependencies. | [`sdks/typescript`](https://github.com/BreadBowlAI/breadbowl-embed/tree/main/sdks/typescript) |
 
-The types of both clients are generated from the API's OpenAPI contract, [`sdks/openapi/bb-embed.v1.yaml`](sdks/openapi/bb-embed.v1.yaml). Each SDK's README has its install and test commands.
+The types of both clients are generated from the API's OpenAPI contract, [`sdks/openapi/bb-embed.v1.yaml`](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/sdks/openapi/bb-embed.v1.yaml). Each SDK's README has its install and test commands.
 
 ## Install
 
-Use Python 3.12 or newer. Clone the public repository:
+Use Python 3.12 or newer. Once the package is published on PyPI:
+
+```bash
+python -m pip install breadbowl-embed          # extras: [faiss] FAISS search backend, [viz] plots, [all] every extra
+```
+
+Until then (and for development), install from the public repository:
 
 ```bash
 git clone https://github.com/BreadBowlAI/breadbowl-embed.git
 cd breadbowl-embed
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install .            # add '.[faiss]' for the optional FAISS search backend
+python -m pip install .            # add '.[faiss]' for the optional FAISS search backend, '.[viz]' for plots
 ```
 
 CPU is the default. On a supported Apple Silicon Mac, use `device="mps"` in `BreadBowl.from_pretrained(...)` to encode on the Apple GPU. CUDA can be requested with `device="cuda"`, but has not been validated. The high-level encoders return CPU float32 tensors; the convenience reranking and index APIs score on CPU.
 
-The direct runtime dependencies are **PyTorch, Transformers, Hugging Face Hub, Safetensors and NumPy**. The allowed versions are bounded by the two stacks the test suite and release checks ran on (PyTorch 2.11–2.14, Transformers 5.4–5.17; see [validation](docs/validation.md)). FAISS is optional. The Qwen backbone uses its PyTorch implementation without optional accelerated kernels.
+The direct runtime dependencies are **PyTorch, Transformers, Hugging Face Hub, Safetensors and NumPy**. The allowed versions are bounded by the two stacks the test suite and release checks ran on (PyTorch 2.11–2.14, Transformers 5.4–5.17; see [validation](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/validation.md)). FAISS is optional. The Qwen backbone uses its PyTorch implementation without optional accelerated kernels.
 
 ## Rerank a few passages
 
@@ -45,7 +51,7 @@ import os
 from breadbowl_embed import BreadBowl
 
 model = BreadBowl.from_pretrained(
-    os.environ.get("BREADBOWL_MODEL", "dotproductx/breadbowl-embed-v1.2-preview")
+    os.environ.get("BREADBOWL_MODEL", "dotproductx/breadbowl-embed-v1.3")
 )
 passages = [
     "Octopuses have three hearts.",
@@ -58,7 +64,7 @@ for hit in model.rerank("How many hearts does an octopus have?", passages):
 
 Scores rank candidates; they are not probabilities. Query instructions and formatting are loaded from the checkpoint (`"{instruction}\nQuery: {query}"`, default instruction "Retrieve relevant documents."). Long passages are truncated at the model's configured token limit (384); split long documents into passages before encoding. Queries have a 128-token limit, including their instruction. Pass `instruction="..."` (one for all queries) or `instructions=[...]` (one per query) to `encode_queries` to change the instruction.
 
-**Batching.** The encoders run one text per forward pass by default (`batch_size=1`), so a text's slots never depend on which other texts were encoded with it; repeated encodings are bit-identical at a fixed thread count (in float32, different thread counts can differ by ~1e-6). Larger batches pad shorter texts and use different matrix kernels; that changes results slightly (in float32 by up to ~6e-7 in score, in bfloat16 by up to ~7e-3 and enough to reorder close candidates), even for texts of equal length, and on CPU it was not faster for full-length passages ([validation](docs/validation.md)). Pass a larger `batch_size` only when throughput on an accelerator matters more than batch-independent results.
+**Batching.** The encoders run one text per forward pass by default (`batch_size=1`), so a text's slots never depend on which other texts were encoded with it; repeated encodings are bit-identical at a fixed thread count (in float32, different thread counts can differ by ~1e-6). Larger batches pad shorter texts and use different matrix kernels; that changes results slightly (in float32 by up to ~6e-7 in score, in bfloat16 by up to ~7e-3 and enough to reorder close candidates), even for texts of equal length, and on CPU it was not faster for full-length passages ([validation](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/validation.md)). Pass a larger `batch_size` only when throughput on an accelerator matters more than batch-independent results.
 
 **Threads.** PyTorch uses one thread per physical core by default. Several encoders on one machine, or a busy host, oversubscribe the cores and latency can collapse; give each process a share, e.g. `torch.set_num_threads(physical_cores // 2)` for two processes (`--threads` on the command line). On a loaded 16-core host, 8 threads answered single queries faster than 16.
 
@@ -101,7 +107,7 @@ Search profiles decide which documents reach value reranking. Every result recor
 
 The per-slot shortlist is the paper's retrieval pipeline: every query slot retrieves its top `slot_hits` document routing slots by cosine; documents are shortlisted by the mean, over query slots, of their best hit (a query slot that did not hit the document counts −1); exact routing rescoring keeps `rerank` documents; their stored values rerank them by `0.75 * routing + 0.25 * value`. `paper` reproduces the reported evaluation settings. At 128 hits per slot, many queries on a large corpus shortlist fewer than 100 documents, so the rerank list is underfilled; `default` searches 512 hits per slot to fill it. `exact` scores every document's routing; with an exact backend it is the upper bound, at linear cost per query. Override parameters with `candidate_k=`, or pass `SearchProfile(...)`; a changed named profile is recorded as `custom`. The API requires `rerank >= top_k >= 1`.
 
-The slot search is exact (PyTorch matrix products over all stored routing slots, in blocks); `backend="faiss"` uses a flat FAISS inner-product index instead (optional extra). The first slot search keeps a float32 copy of the unit routing vectors in memory (16 KiB per passage); set `index.cache_routing = False` to read storage block by block on every search instead. Results are deterministic: final ties order by id. CPU timings are in [validation](docs/validation.md).
+The slot search is exact (PyTorch matrix products over all stored routing slots, in blocks); `backend="faiss"` uses a flat FAISS inner-product index instead (optional extra). The first slot search keeps a float32 copy of the unit routing vectors in memory (16 KiB per passage); set `index.cache_routing = False` to read storage block by block on every search instead. Results are deterministic: final ties order by id. CPU timings are in [validation](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/validation.md).
 
 Storage: `float32` keeps 32,768 bytes of slots per passage, `float16` 16,384, `int8` 8,256 (per-vector symmetric fixed point, scale = largest magnitude / 127; value slots keep a float32 scale, routing slots are compared by cosine so their scale is dropped). An index is a directory of `.npy` shards plus `index.json` holding the model's representation id, storage type, representation settings, scoring settings, default profile, ids and metadata; shard checksums are verified on load (`verify=False` skips them, `mmap=True` memory-maps). `Index.add(...)` appends documents as a new shard. Indexes saved by v0.1 still load and keep their exact profile. The index stores ids and optional metadata, not your text.
 
@@ -131,6 +137,30 @@ e.slot_matches()         # per query slot: best document slot, cosine, contribut
 
 `index.search(..., explain=True)` attaches the slot matches to each result and, for per-slot shortlist profiles, the slot hits (query slot, document slot, rank, cosine) that put the document on the shortlist.
 
+## Research toolkit (experimental)
+
+`breadbowl_embed.research` looks inside the model and tests what it finds: slot-attention maps mapped back to your words (and the query instruction), an exact slot-pair decomposition of every score with attention-weighted token attribution, slot ablation, text occlusion, scoring-rule overrides, intermediate tensors, slot and search-pipeline diagnostics, precision experiments and a self-contained HTML report.
+
+```python
+from breadbowl_embed import research
+
+pair = research.inspect_pair(model, "How many hearts does an octopus have?", passages[0])
+pair.decomposition.final       # == model.score(...).combined; the 16 x 16 slot-pair parts recombine to it
+pair.report("pair.html")       # offline HTML report; `breadbowl-embed inspect pair ... --html pair.html` from the shell
+```
+
+The research API is experimental and may change between minor versions; the core API is stable. Guide and caveats: [docs/research.md](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/research.md).
+
+## Evaluate on your own data
+
+`breadbowl-embed evaluate` scores retrieval or reranking on BEIR-layout data (corpus, queries, qrels) or TREC runs, with resumable corpus encoding, the model card's metrics and paired significance tests:
+
+```bash
+breadbowl-embed evaluate retrieve --model <path-or-repo> --dtype bfloat16 --data path/to/beir/dataset --work-dir work --output result --profile paper
+```
+
+Details, including the MTEB adapter (`pip install "breadbowl-embed[mteb]"`): [docs/evaluation.md](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/evaluation.md).
+
 ## Command line
 
 ```bash
@@ -138,6 +168,8 @@ breadbowl-embed info  /path/to/release                    # identity, provenance
 breadbowl-embed index --model /path/to/release --input docs.jsonl --output my-index --storage int8
 breadbowl-embed search --model /path/to/release --index my-index --query "octopus hearts" --explain
 breadbowl-embed explain --model /path/to/release --query "octopus hearts" --document "Octopuses have three hearts."
+breadbowl-embed inspect pair --model /path/to/release --query "octopus hearts" --document "Octopuses have three hearts." --html pair.html
+breadbowl-embed evaluate retrieve --model /path/to/release --data path/to/beir/dataset --work-dir work --output result
 breadbowl-embed encode --model /path/to/release --kind query --input queries.txt --output query-slots
 breadbowl-embed tokenize --model /path/to/release --kind document --input docs.jsonl
 breadbowl-embed export --checkpoint /path/to/model.pt --output /path/to/new-release --base-model-path /path/to/base
@@ -161,11 +193,13 @@ For research access, `model.network` is the PyTorch module. A direct forward pas
 
 ## Examples and development
 
-- [Reranking script](examples/rerank.py)
-- [Search and persistence script](examples/search.py)
-- [Try the model notebook](notebooks/try_breadbowl.ipynb)
-- [Release format, export and parity gate](docs/releasing.md)
-- [Validation scope, parity numbers and CPU timings](docs/validation.md)
+- [Reranking script](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/examples/rerank.py)
+- [Search and persistence script](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/examples/search.py)
+- [Research toolkit script](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/examples/research.py) and [guide](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/research.md)
+- [Try the model notebook](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/notebooks/try_breadbowl.ipynb) and [research toolkit notebook](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/notebooks/research_toolkit.ipynb)
+- [Evaluation](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/evaluation.md)
+- [Release format, export and parity gate](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/releasing.md)
+- [Validation scope, parity numbers and CPU timings](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/validation.md)
 
 ```bash
 python -m pip install '.[dev]'
@@ -176,4 +210,4 @@ Weights belong in the Hugging Face repository; library code and examples belong 
 
 ## License
 
-The toolkit uses the [Apache 2.0 license](LICENSE). The released model is based on Qwen/Qwen3.5-0.8B-Base; its pinned source revision is recorded in the model configuration. See the model card for model-specific provenance and evaluation details.
+The toolkit uses the [Apache 2.0 license](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/LICENSE). The released model is based on Qwen/Qwen3.5-0.8B-Base; its pinned source revision is recorded in the model configuration. See the model card for model-specific provenance and evaluation details.
