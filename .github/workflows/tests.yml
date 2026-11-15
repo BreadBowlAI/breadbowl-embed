@@ -22,3 +22,52 @@ jobs:
           python -m pip install "transformers==${{ matrix.stack.transformers }}"
           "huggingface-hub==${{ matrix.stack.hub }}" "safetensors==${{ matrix.stack.safetensors }}" '.[dev,faiss]'
       - run: python -m pytest
+
+  # HTTP client SDKs (sdks/). Each one is generated from sdks/openapi/bb-embed.v1.yaml; the
+  # --check steps fail when generated code or the shared test fixtures are stale.
+  sdk-python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The lower and upper bounds of the Python versions the SDK supports.
+        python: ['3.9', '3.13']
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install '.[dev]'
+      - run: python scripts/generate_types.py --check
+      - run: ruff check . && ruff format --check .
+      - run: mypy
+      - run: python -m pytest
+
+  sdk-typescript:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The development tools (Vitest) need Node 22.12+; the built package targets Node 18+.
+        node: ['22', '24']
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: sdks/typescript/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run generate:check
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test
+      - run: pnpm run build
+      - run: npm pack --dry-run

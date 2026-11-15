@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "breadbowl"
+version = "0.1.0"
+description = "Python client for the BreadBowl Embed (bb-embed v1.3) HTTP API: encode, score, managed indexes and search, with the model's raw slot data."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+keywords = ["breadbowl", "bb-embed", "embeddings", "retrieval", "search"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = ["httpx>=0.26,<1"]
+
+[project.urls]
+Homepage = "https://github.com/BreadBowlAI/breadbowl-embed/tree/main/sdks/python"
+Repository = "https://github.com/BreadBowlAI/breadbowl-embed"
+Issues = "https://github.com/BreadBowlAI/breadbowl-embed/issues"
+Changelog = "https://github.com/BreadBowlAI/breadbowl-embed/blob/main/sdks/python/CHANGELOG.md"
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.21"]
+dev = [
+  "numpy>=1.21",
+  "pytest>=7",
+  "anyio>=3.6",
+  "PyYAML>=6",
+  "jsonschema>=4.18",
+  "mypy>=1.8",
+  "ruff>=0.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/breadbowl"]
+
+[tool.hatch.build.targets.sdist]
+# Tests, fixtures and the generator need the contract in ../openapi, so they stay in the repository.
+include = ["src/breadbowl", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+extend-exclude = ["src/breadbowl/_generated.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# typing.List/Optional are kept on purpose: the dataclass field parser evaluates annotations at
+# runtime, and PEP 604/585 spellings do not evaluate on Python 3.9.
+ignore = ["UP006", "UP007", "UP035", "UP045"]
+
+[tool.mypy]
+strict = true
+files = ["src/breadbowl"]

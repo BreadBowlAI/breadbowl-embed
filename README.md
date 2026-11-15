@@ -6,9 +6,19 @@ BreadBowl represents each passage as 16 routing–value slots. Routing vectors f
 
 This repository provides the Python toolkit for trying and inspecting that architecture. See the [model card and evaluation](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview) for the research motivation and results.
 
-This repository contains the model implementation and local research tools. BreadBowl's hosted service is a separate product.
+This repository contains the model implementation and local research tools, and the client SDKs for BreadBowl's hosted API. The hosted service itself is a separate product.
 
 **Research preview:** the step-4000 KL+replay weights (v1.2-preview) are available on [Hugging Face](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview). Anonymous download and CPU inference have been verified from a fresh cache. The v1.3 (step 5152) release format, exporter and parity gate are in this repository; its weights are not published yet. Install the toolkit from this repository; it is not yet published on PyPI.
+
+## Which package do I need?
+
+| Package | Use it to | Where |
+|---|---|---|
+| `breadbowl-embed` (Python, `import breadbowl_embed`) | Run the model yourself: encode, score, index and search locally with PyTorch. The rest of this README is about this package. | repository root ([`src/breadbowl_embed`](src/breadbowl_embed)) |
+| `breadbowl` (Python, `import breadbowl`) | Call the hosted BreadBowl Embed API (`bb-embed` v1.3) over HTTP. Depends only on `httpx`; no model, no PyTorch. | [`sdks/python`](sdks/python) |
+| `@breadbowl/embed` (TypeScript/JavaScript) | The same HTTP client for Node 18+, Bun, Deno and browsers. No runtime dependencies. | [`sdks/typescript`](sdks/typescript) |
+
+The types of both clients are generated from the API's OpenAPI contract, [`sdks/openapi/bb-embed.v1.yaml`](sdks/openapi/bb-embed.v1.yaml). Each SDK's README has its install and test commands.
 
 ## Install
 

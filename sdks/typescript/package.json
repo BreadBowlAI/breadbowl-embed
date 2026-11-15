@@ -1,0 +1,73 @@
+{
+  "name": "@breadbowl/embed",
+  "version": "0.1.0",
+  "description": "TypeScript client for the BreadBowl Embed (bb-embed v1.3) HTTP API: encode, score, managed indexes and search, with the model's raw slot data.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/BreadBowlAI/breadbowl-embed/tree/main/sdks/typescript#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BreadBowlAI/breadbowl-embed.git",
+    "directory": "sdks/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/BreadBowlAI/breadbowl-embed/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "breadbowl",
+    "bb-embed",
+    "embeddings",
+    "retrieval",
+    "search"
+  ],
+  "scripts": {
+    "generate": "pnpm run generate:types && pnpm run generate:fixtures",
+    "generate:types": "node scripts/generate-types.mjs",
+    "generate:fixtures": "node scripts/generate-fixtures.mjs",
+    "generate:check": "node scripts/generate-types.mjs --check && node scripts/generate-fixtures.mjs --check",
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^24.19.2",
+    "ajv": "^8.20.0",
+    "eslint": "^9.39.5",
+    "openapi-typescript": "^7.13.0",
+    "tsup": "^8.5.1",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^5.1.0",
+    "yaml": "^2.9.1"
+  },
+  "packageManager": "pnpm@11.7.0"
+}

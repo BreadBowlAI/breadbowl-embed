@@ -1,0 +1,5 @@
+# pnpm settings for this package (it is not part of a larger workspace).
+# esbuild (used by tsup and vitest) installs its platform binary as an optional dependency;
+# its install script is not needed.
+allowBuilds:
+  esbuild: false

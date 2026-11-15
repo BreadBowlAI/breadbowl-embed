@@ -431,13 +431,11 @@ Not intended for: production search without your own evaluation on your data; no
 
 ## Citation
 
-<!-- TODO: replace with the final citation. -->
-
 ```bibtex
-@misc{breadbowl_embed,
-  title  = {BreadBowl-Embed: Encode Once, Retrieve and Rerank},
-  author = {TODO},
-  year   = {TODO},
-  note   = {TODO}
+@misc{breadbowl_embed_v1_3,
+  title        = {breadbowl-embed-v1.3},
+  author       = {{Bread Bowl AI}},
+  year         = {2026},
+  howpublished = {\url{https://huggingface.co/dotproductx/breadbowl-embed-v1.3}}
 }
 ```

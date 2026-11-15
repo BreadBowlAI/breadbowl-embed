@@ -1,0 +1,3898 @@
+openapi: 3.1.0
+info:
+  title: BreadBowl Embed API
+  version: 1.3.0
+  summary: Encoding, scoring and managed retrieval for the open BreadBowl Embed slot model.
+  description: |
+    The HTTP contract of the hosted `bb-embed` service. Self-hosted deployments serve the same
+    contract. This document is the single source of truth for the public surface: server
+    validation, SDK types and documentation are generated from it.
+
+    The model is open source, so the API returns the model's own data, not only scores.
+    There are three operation families:
+
+    * **Encode** (`POST /v1/encode`) returns routing slots, value slots, slot→token attention
+      and tokens for queries or documents. Nothing is stored.
+    * **Score** (`POST /v1/score`) ranks up to 50 transient documents against one query. With
+      `explain` and `return_attention` it returns everything needed to draw the full path
+      query token → query slot → document slot → document token. Only a usage event is stored.
+    * **Indexes** store encoded documents (identifiers, metadata, offsets and slot vectors,
+      never text) and search them.
+
+    ## Authentication and scopes
+
+    Send `Authorization: Bearer <key>` on every `/v1/*` request. A key belongs to one tenant.
+    A key may be limited to scopes; each operation names the scope it needs in its security
+    requirement:
+
+    | Scope | Operations |
+    | --- | --- |
+    | `encode` | `encode` |
+    | `score` | `score` |
+    | `indexes:read` | `listIndexes`, `getIndex`, `getDocument`, `searchIndex` |
+    | `indexes:write` | `createIndex`, `deleteIndex`, `upsertDocuments`, `deleteDocument` |
+    | none | `listModels`, `getModel`, `getUsage` |
+
+    Keys created before scopes existed hold every scope. `GET /healthz` and `GET /readyz`
+    need no key. Never put a key in a URL, a browser bundle or a log.
+
+    ## Request IDs
+
+    Every response, including errors and health probes, carries `x-request-id`. Quote it when
+    reporting a problem.
+
+    ## Errors
+
+    Every non-2xx response except `GET /readyz` uses one envelope:
+
+    ```json
+    {"error": {"code": "validation_error", "message": "Request validation failed", "issues": []}}
+    ```
+
+    `code` is stable and machine-readable. `message` is for people and may change. `issues`
+    appears only with `validation_error`; `details` carries structured data for some codes.
+    A client that meets an unknown `code` must handle it by its HTTP status.
+
+    | Status | Codes | Retry? |
+    | --- | --- | --- |
+    | 400 | `bad_request` (malformed JSON or headers) | No |
+    | 401 | `authentication_failed`, `api_key_expired` | No |
+    | 403 | `tenant_suspended`, `insufficient_scope` | No |
+    | 404 | `not_found` | No |
+    | 409 | `index_name_conflict`, `index_not_ready`, `model_revision_unavailable`, `representation_unavailable`, `idempotency_request_in_progress` | Only `index_not_ready` and `idempotency_request_in_progress`, after `Retry-After` |
+    | 413 | `payload_too_large` | No |
+    | 415 | `unsupported_media_type` | No |
+    | 422 | `validation_error`, `invalid_cursor`, `unsupported_model`, `unsupported_search_profile`, `unsupported_filter`, `attention_limit_exceeded`, `document_limit_exceeded`, `chunk_limit_exceeded`, `idempotency_key_reused` | No |
+    | 429 | `rate_limit_exceeded`, `concurrency_limit_exceeded` | Yes, after `Retry-After` (seconds) |
+    | 429 | `usage_limit_exceeded` | No: the monthly allowance is exhausted; `Retry-After` points to the start of the next UTC month (can be weeks). Raise the limit or wait. |
+    | 500 | `internal_error` | Yes, bounded exponential backoff |
+    | 503 | `service_unavailable` | Yes, honor `Retry-After` when present |
+
+    Request bodies are validated strictly: unknown fields, and options a model or index does not
+    support, fail with 422 instead of being ignored. Unknown query parameters are ignored.
+
+    Each operation lists the codes it can return per status in `x-error-codes`. Codes whose
+    `details` have a defined shape are typed by the `Error` schema (for example
+    `insufficient_scope` → `InsufficientScopeDetails`).
+
+    ## Retries and idempotency
+
+    Retry 429 (except `usage_limit_exceeded`), 500, 502, 503, 504, timeouts and connection
+    failures with bounded exponential backoff, honoring `Retry-After`. Do not retry other 4xx
+    responses.
+
+    Only requests that complete with a 2xx response are billed. Usage (`input_tokens` and the
+    counters of `GET /v1/usage`) is recorded only for 2xx responses; a failed or rejected
+    attempt (any 4xx or 5xx) consumes no monthly allowance, so retrying a failed `encode`,
+    `score` or `searchIndex` is never billed twice. A request that succeeded on the server is
+    billed even if the client never received the response (for example after a client-side
+    timeout), and a retry of it is billed again. `upsertDocuments` bills only the documents it
+    reports as `upserted`.
+
+    Mutations (`createIndex`, `deleteIndex`, `upsertDocuments`, `deleteDocument`) accept an
+    optional `Idempotency-Key` header. The key is scoped to the tenant and the operation
+    (method plus path) and kept for 24 hours after the first request completes. A retry with the
+    same key and the same body (compared after RFC 8785 JSON canonicalization) replays the stored
+    status and body with `Idempotent-Replayed: true` and is not billed again. The same key with a
+    different body fails with 422 `idempotency_key_reused`; a retry while the first request is
+    still running fails with 409 `idempotency_request_in_progress`. Only 2xx responses are
+    stored; any other outcome releases the key. Upserts and deletes are also naturally
+    idempotent by `doc_id`; the header additionally prevents double billing of a retried upsert.
+
+    `encode`, `score` and `searchIndex` store nothing and do not take `Idempotency-Key`; every
+    attempt that succeeds is billed, so a retried `encode`, `score` or `searchIndex` that
+    succeeds again is billed again.
+
+    ## Pagination
+
+    List operations take `limit` (1–100, default 20) and an opaque `cursor`, and return
+    `{"data": [...], "has_more": bool, "next_cursor": string|null}`. `next_cursor` is a string
+    exactly when `has_more` is `true` and `null` exactly when it is `false`. Pass `next_cursor`
+    back unchanged to get the next page. A cursor is bound to the list and its filters; a cursor
+    from another list or with different filters fails with 422 `invalid_cursor`.
+
+    ## Numbers
+
+    Counters that accumulate over time without a bound (token totals, request totals) are
+    decimal strings such as `"50000000"`, so no client loses integer precision. Per-request
+    quantities and counts of stored resources are JSON integers. Scores are JSON numbers
+    computed in float32 and serialized as the shortest decimal that round-trips.
+
+    ## Tensors
+
+    Tensors are objects with `dtype`, `shape`, `axes`, `encoding` and `data`, in row-major
+    (C) order. `encoding_format: base64` (the default) returns `data` as base64 of the
+    little-endian `dtype` bytes; its length is `product(shape) × itemsize`. `encoding_format:
+    float` returns `data` as nested JSON arrays matching `shape`, each value written as the
+    shortest decimal that round-trips to the same `dtype` value; it is convenient for small
+    tensors and roughly four times larger than base64 for big ones. `dtype` defaults to
+    `float16`, the dtype an index stores; `float32` is available for full precision.
+
+    The request's `dtype` applies to routing slots, value slots and attention. The four
+    explanation tensors (`Explanation`) are always `float32`, whatever `dtype` says, so that
+    `routing_score = mean(routing_contribution)` and the rows of `value_attention` summing to 1
+    hold to float32 precision; `encoding_format` applies to them as to every tensor.
+
+    Routing slots are L2-normalized. Value slots are raw (not normalized); scoring normalizes
+    the query value slots and the value readout, never the stored document value slots.
+
+    Examples marked `x-abbreviated: true` shorten tensor `data` (and token lists) for
+    readability: their `data` does not have `product(shape) × itemsize` bytes, so strict
+    decoders must skip them. Every other example is self-consistent.
+
+    ## Tokens and character offsets
+
+    Token `start`/`end` and chunk `char_start`/`char_end` are offsets into the caller's
+    original string, counted in **Unicode code points** (not UTF-16 code units, not bytes),
+    end-exclusive. JavaScript clients must convert before slicing a JS string (the TypeScript
+    SDK provides a helper). The v1.3 tokenizer adds no special tokens, so v1.3 responses have
+    only `template` and `input` tokens. Tokens that come from the instruction template or are special
+    tokens have `start` and `end` set to `null`. A byte-level token that covers only part of a
+    character reports the whole character, so neighbouring tokens can share a span; its `text`
+    is empty until the token that completes the character, which carries the whole character
+    (see `Token.text`).
+
+    ## Ordering and ties
+
+    `score` results sort by `score` descending, then by position in the request ascending.
+    `searchIndex` results sort by `score` descending, then by `doc_id` ascending (UTF-8 byte
+    order), then by `chunk_index` ascending. Ordering uses the exact float32 scores before
+    serialization.
+
+    ## Limits
+
+    | Limit | Value |
+    | --- | --- |
+    | Request body | 5 MiB |
+    | Inputs per `encode` | 50 |
+    | Documents per `score` or `upsertDocuments` | 50 |
+    | Query text | 8 KiB UTF-8 |
+    | Document text | 100 KiB UTF-8 |
+    | Instruction text | 1 KiB UTF-8 |
+    | `doc_id` | 1–255 characters |
+    | Metadata | 64 keys, 8 KiB UTF-8 serialized, scalar values only |
+    | `top_k` / `candidate_k` | ≤ 100 / ≤ 500 |
+    | Attention values per request | 1,048,576 |
+    | Chunks per `upsertDocuments` | 128 (after chunking; 422 `chunk_limit_exceeded`) |
+    | Query / document tokens | 128 / 384 (longer text is truncated at the end and flagged) |
+
+    Encoding is compute-bound. On the hosted CPU deployment one 384-token chunk takes about
+    0.3–0.45 s and chunks are encoded one at a time, so `upsertDocuments` runs at roughly 2.4–3.5
+    chunks per second: a request at the chunk limit takes 40–60 s, longer while other upserts
+    are queued. Use client timeouts of at least 120 s for upserts and send interactive batches of
+    a few documents. Searches, scores of a few documents and query encodes are not queued behind
+    upserts (they use separate capacity) and take well under a second.
+
+    `GET /v1/models/{model}` reports these limits for a deployment; clients should read them
+    rather than hard-coding them. Per-tenant limits (requests per minute, concurrent requests,
+    monthly input tokens, stored documents) are reported by `GET /v1/usage`.
+
+    ## Data handling
+
+    `text_retention` is always `none`. Text is processed transiently. Indexes persist document
+    identifiers, metadata, content hashes, token and character offsets, and slot vectors.
+    `encode` and `score` persist only a usage event. Do not submit regulated data.
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+servers:
+  - url: https://embed.breadbowl.ai
+    description: The hosted BreadBowl Embed service.
+  - url: '{scheme}://{host}'
+    description: A self-hosted deployment; it listens on port 8080 by default.
+    variables:
+      scheme:
+        default: http
+        enum: [http, https]
+      host:
+        default: localhost:8080
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+    description: Unauthenticated liveness and readiness probes.
+  - name: Models
+    description: Immutable model identities, dimensions, defaults, capabilities and limits.
+  - name: Encode
+    description: Raw model output for queries and documents. Nothing is stored.
+  - name: Score
+    description: Rank and explain transient documents against one query. Nothing is stored.
+  - name: Indexes
+    description: Managed indexes that pin a model revision and a search profile.
+  - name: Documents
+    description: Batch upsert, inspection and deletion of documents in an index.
+  - name: Search
+    description: Query an index with optional explanations and stored vectors.
+  - name: Usage
+    description: Current-month usage, limits and remaining allowance of the calling tenant.
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [Health]
+      summary: Liveness probe
+      description: Returns 200 while the API process runs. It does not check any dependency.
+      security: []
+      responses:
+        '200':
+          description: The API process is alive.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                ok: true
+
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [Health]
+      summary: Readiness probe
+      description: >-
+        Returns 200 only when the database, the vector store and the model worker are ready and
+        the worker serves the expected default model revision. Otherwise returns 503 with
+        `{"ok": false}`; the body deliberately does not say which dependency failed.
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessStatus'
+              example:
+                ok: true
+                model:
+                  id: breadbowl-embed-v1.3
+                  revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+        '503':
+          description: Not ready.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotReadyStatus'
+              example:
+                ok: false
+
+  /v1/models:
+    get:
+      operationId: listModels
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended]
+        '422': [validation_error, invalid_cursor]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Models]
+      summary: List models
+      description: >-
+        Lists the models this deployment serves, default model first, then by `id` ascending.
+        Any valid key may call it.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of models.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+              examples:
+                default:
+                  $ref: '#/components/examples/ModelListExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/models/{model}:
+    get:
+      operationId: getModel
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended]
+        '404': [not_found]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Models]
+      summary: Get a model
+      description: >-
+        Returns one model by immutable id or by alias. An alias resolves to the model it
+        currently names; the response always carries the immutable `id` and `revision`.
+        Error codes: 404 `not_found`.
+      parameters:
+        - $ref: '#/components/parameters/ModelName'
+      responses:
+        '200':
+          description: The model.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+              examples:
+                default:
+                  $ref: '#/components/examples/ModelExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/encode:
+    post:
+      operationId: encode
+      x-error-codes:
+        '400': [bad_request]
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '413': [payload_too_large]
+        '415': [unsupported_media_type]
+        '422': [validation_error, unsupported_model, attention_limit_exceeded]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded, usage_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Encode]
+      summary: Encode queries or documents
+      description: |
+        Encodes 1–50 texts of one `input_type` and returns, per text, the parts selected by
+        `return`: routing slots `[slots, routing_dim]`, value slots `[slots, value_dim]`,
+        slot→token attention `[heads, slots, tokens]` and the tokens with character offsets.
+
+        Queries are formatted with the model's `query_format` and `instruction` (default
+        `Retrieve relevant documents.`) and truncated to 128 tokens; documents use
+        `document_format` and are truncated to 384 tokens. Truncation removes tokens from the
+        end of the caller's text and sets `truncated: true`. `token_count` counts every encoded
+        token, including template and special tokens, and is what `usage.input_tokens` bills.
+
+        Attention is large (heads × slots × tokens values per text). The total number of
+        attention values returned by one request may not exceed
+        `limits.max_attention_values_per_request` (1,048,576). The server tokenizes first and
+        rejects an over-limit request with 422 `attention_limit_exceeded` before running the
+        model; rejected requests are not billed. `attention_heads: mean` cuts the size by the
+        number of heads.
+
+        Required scope: `encode`. Error codes: 422 `validation_error`, `unsupported_model`,
+        `attention_limit_exceeded`; 429 `rate_limit_exceeded`, `concurrency_limit_exceeded`,
+        `usage_limit_exceeded`.
+      security:
+        - bearerAuth: [encode]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EncodeRequest'
+            examples:
+              queryWithAttention:
+                summary: One query with routing, attention and tokens
+                value:
+                  input: rotate key
+                  input_type: query
+                  return: [routing, attention, tokens]
+                  attention_heads: mean
+              documents:
+                summary: Two documents, routing and value slots as float32
+                value:
+                  model: breadbowl-embed-v1.3
+                  input:
+                    - Keys can be rotated from the dashboard.
+                    - Refunds are available within 30 days.
+                  input_type: document
+                  return: [routing, value]
+                  dtype: float32
+      responses:
+        '200':
+          description: One entry per input, in input order.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncodeResponse'
+              examples:
+                queryWithAttention:
+                  $ref: '#/components/examples/EncodeResponseExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/score:
+    post:
+      operationId: score
+      x-error-codes:
+        '400': [bad_request]
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '413': [payload_too_large]
+        '415': [unsupported_media_type]
+        '422': [validation_error, unsupported_model, attention_limit_exceeded]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded, usage_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Score]
+      summary: Score transient documents against a query
+      description: |
+        Encodes one query and 1–50 documents and returns all documents ranked by
+        `score = routing_weight × routing_score + value_weight × value_score`
+        (defaults 0.75 and 0.25; the values used are echoed in `scoring`). Every result carries
+        `score`, `routing_score` and `value_score`. Documents longer than 384 tokens are
+        truncated, not chunked; use an index for long documents.
+
+        * `explain: true` adds, per document, the four tensors the score is computed from:
+          `slot_similarity`, `routing_contribution`, `value_attention` and `value_slot_cosine`
+          (see `Explanation`). `routing_score` equals the mean of `routing_contribution` and
+          `value_score` the mean of `value_slot_cosine`, up to float32 rounding.
+        * `return_attention: true` adds the query's and each document's slot→token attention
+          and tokens. Together with `explain` this is the full map query token → query slot →
+          document slot → document token. The attention cap of `encode` applies to the sum of
+          the query's and all documents' attention values.
+
+        Results sort by `score` descending, ties by request position. Nothing but a usage event
+        is stored.
+
+        Required scope: `score`. Error codes: 422 `validation_error`, `unsupported_model`,
+        `attention_limit_exceeded`; 429 `rate_limit_exceeded`, `concurrency_limit_exceeded`,
+        `usage_limit_exceeded`.
+      security:
+        - bearerAuth: [score]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreRequest'
+            examples:
+              basic:
+                summary: Rank two documents
+                value:
+                  query: refund policy
+                  documents:
+                    - doc_id: a
+                      text: Refunds are available within 30 days.
+                      metadata:
+                        source: help-center
+                    - doc_id: b
+                      text: Keys can be rotated from the dashboard.
+              explained:
+                summary: Rank with explanations and attention maps
+                value:
+                  query: refund policy
+                  documents:
+                    - doc_id: a
+                      text: Refunds accepted.
+                  explain: true
+                  return_attention: true
+                  attention_heads: mean
+      responses:
+        '200':
+          description: All documents, ranked.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreResponse'
+              examples:
+                basic:
+                  $ref: '#/components/examples/ScoreResponseExample'
+                explained:
+                  $ref: '#/components/examples/ScoreResponseExplainedExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/indexes:
+    post:
+      operationId: createIndex
+      x-error-codes:
+        '400': [bad_request]
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '409': [index_name_conflict, idempotency_request_in_progress]
+        '413': [payload_too_large]
+        '415': [unsupported_media_type]
+        '422': [validation_error, unsupported_model, unsupported_search_profile, idempotency_key_reused]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Indexes]
+      summary: Create an index
+      description: |
+        Creates an index that pins, for its whole life, the resolved model revision, its
+        representation (dimensions, normalization, stored dtype, slot schema version) and a
+        named search profile with its parameters. Upgrading the model means creating a new
+        index and re-ingesting; the service never mixes representations in one index. Index
+        names are unique within a tenant.
+
+        Required scope: `indexes:write`. Error codes: 409 `index_name_conflict`,
+        `idempotency_request_in_progress`; 422 `validation_error`, `unsupported_model` (unknown
+        or deprecated model), `unsupported_search_profile`, `idempotency_key_reused`.
+      security:
+        - bearerAuth: ['indexes:write']
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIndexRequest'
+            examples:
+              minimal:
+                summary: Defaults for model, profile and chunking
+                value:
+                  name: production
+              explicit:
+                summary: Explicit model, profile, chunking and metadata schema
+                value:
+                  name: support-articles
+                  model: breadbowl-embed-v1.3
+                  search_profile: paper
+                  text_retention: none
+                  chunking:
+                    strategy: token_window
+                    max_tokens: 256
+                    overlap_tokens: 32
+                    minimum_chunk_tokens: 16
+                  metadata_schema:
+                    source: string
+                    year: number
+      responses:
+        '201':
+          description: The index was created.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+            Location:
+              description: URL of the new index.
+              schema:
+                type: string
+                format: uri-reference
+                examples: [/v1/indexes/0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Index'
+              examples:
+                default:
+                  $ref: '#/components/examples/IndexExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    get:
+      operationId: listIndexes
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '422': [validation_error, invalid_cursor]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Indexes]
+      summary: List indexes
+      description: >-
+        Lists the tenant's indexes, newest first (`created_at` descending, then `id`
+        descending). Required scope: `indexes:read`. Error codes: 422 `validation_error`,
+        `invalid_cursor`.
+      security:
+        - bearerAuth: ['indexes:read']
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: name
+          in: query
+          required: false
+          description: Return only the index with exactly this name (at most one).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      responses:
+        '200':
+          description: A page of indexes.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexList'
+              examples:
+                default:
+                  $ref: '#/components/examples/IndexListExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/indexes/{index_id}:
+    parameters:
+      - $ref: '#/components/parameters/IndexId'
+    get:
+      operationId: getIndex
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '404': [not_found]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Indexes]
+      summary: Get an index
+      description: >-
+        Returns the index with its pinned model, representation and search profile, its
+        status and its document and chunk counts. Required scope: `indexes:read`. Error codes:
+        404 `not_found`.
+      security:
+        - bearerAuth: ['indexes:read']
+      responses:
+        '200':
+          description: The index.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Index'
+              examples:
+                default:
+                  $ref: '#/components/examples/IndexExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      operationId: deleteIndex
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '404': [not_found]
+        '409': [idempotency_request_in_progress]
+        '422': [validation_error, idempotency_key_reused]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Indexes]
+      summary: Delete an index
+      description: >-
+        Deletes the index and every document, chunk and vector in it. Deletion is logical
+        immediately: the index stops appearing in lists, its name can be reused, and its
+        documents stop counting toward the tenant's document limit. Storage is reclaimed
+        asynchronously. Deleting an index that does not exist returns 404. Required scope:
+        `indexes:write`. Error codes: 404 `not_found`; 409 `idempotency_request_in_progress`;
+        422 `idempotency_key_reused`.
+      security:
+        - bearerAuth: ['indexes:write']
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The index was deleted.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteIndexResponse'
+              example:
+                index_id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+                deleted: true
+                documents_deleted: 1204
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/indexes/{index_id}/documents:
+    parameters:
+      - $ref: '#/components/parameters/IndexId'
+    post:
+      operationId: upsertDocuments
+      x-error-codes:
+        '400': [bad_request]
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '404': [not_found]
+        '409': [index_not_ready, model_revision_unavailable, representation_unavailable, idempotency_request_in_progress]
+        '413': [payload_too_large]
+        '415': [unsupported_media_type]
+        '422': [validation_error, document_limit_exceeded, chunk_limit_exceeded, idempotency_key_reused]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded, usage_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Documents]
+      summary: Upsert documents
+      description: |
+        Upserts 1–50 documents. `doc_id` is the document's identity within the index: sending it
+        again replaces the document's chunks, vectors and metadata. Each document is chunked
+        with the index's chunking settings, encoded with the index's pinned model revision and
+        stored without its text.
+
+        Outcomes are per document. A valid batch returns 200 even when some documents fail, so
+        always inspect `documents[*].status` (or `failed_documents`). A document reported
+        `upserted` is durable and visible to subsequent searches. Failed documents carry an
+        error `code` and a `retryable` flag; retry only those.
+
+        The whole request fails, and nothing is written, when it is invalid, when the new
+        `doc_id`s would exceed the tenant's document limit (422 `document_limit_exceeded`),
+        when the documents chunk into more than `limits.max_chunks_per_upsert` chunks (422
+        `chunk_limit_exceeded`), when the index is not ready (409 `index_not_ready`), when this
+        deployment no longer serves the index's pinned model revision (409
+        `model_revision_unavailable`) or serves it with a different representation, for example
+        another compute dtype (409 `representation_unavailable`).
+
+        Latency grows with the number of chunks: about 2.4–3.5 chunks per second on the hosted
+        deployment, so up to about a minute at the chunk limit (see "Limits"). Only upserted
+        documents are billed.
+
+        Required scope: `indexes:write`. Error codes: 404 `not_found`; 409 `index_not_ready`,
+        `model_revision_unavailable`, `representation_unavailable`,
+        `idempotency_request_in_progress`; 422 `validation_error`, `document_limit_exceeded`,
+        `chunk_limit_exceeded`, `idempotency_key_reused`.
+      security:
+        - bearerAuth: ['indexes:write']
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertDocumentsRequest'
+            example:
+              documents:
+                - doc_id: doc-1
+                  text: Keys can be rotated from the dashboard. Rotation revokes the old key.
+                  metadata:
+                    source: docs
+                    year: 2026
+                - doc_id: doc-2
+                  text: Refunds are available within 30 days of purchase.
+      responses:
+        '200':
+          description: Per-document outcomes, in request order.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpsertDocumentsResponse'
+              examples:
+                partial:
+                  $ref: '#/components/examples/UpsertDocumentsResponseExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/indexes/{index_id}/documents/{doc_id}:
+    parameters:
+      - $ref: '#/components/parameters/IndexId'
+      - $ref: '#/components/parameters/DocId'
+    get:
+      operationId: getDocument
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '404': [not_found]
+        '422': [validation_error]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Documents]
+      summary: Get a stored document
+      description: >-
+        Returns what the index stores for one document: metadata, content hash, status and its
+        chunks with token and character offsets. Text is never stored and never returned. With
+        `return_vectors=true` each chunk also carries its stored routing and value slots.
+        Required scope: `indexes:read`. Error codes: 404 `not_found` (index or document).
+      security:
+        - bearerAuth: ['indexes:read']
+      parameters:
+        - name: return_vectors
+          in: query
+          required: false
+          description: Include each chunk's stored routing and value slots.
+          schema:
+            type: boolean
+            default: false
+        - name: encoding_format
+          in: query
+          required: false
+          description: Tensor encoding when `return_vectors=true`; ignored otherwise.
+          schema:
+            $ref: '#/components/schemas/EncodingFormat'
+        - name: dtype
+          in: query
+          required: false
+          description: >-
+            Tensor dtype when `return_vectors=true`; ignored otherwise. Stored slots are float16;
+            `float32` widens them losslessly.
+          schema:
+            $ref: '#/components/schemas/TensorDtype'
+      responses:
+        '200':
+          description: The stored document.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoredDocument'
+              examples:
+                default:
+                  $ref: '#/components/examples/StoredDocumentExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      operationId: deleteDocument
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '404': [not_found]
+        '409': [idempotency_request_in_progress]
+        '422': [validation_error, idempotency_key_reused]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Documents]
+      summary: Delete a document
+      description: >-
+        Deletes a document's chunks and vectors. Deleting a document that does not exist is
+        safe and returns 200 with `deleted: false`; a missing index returns 404. Required
+        scope: `indexes:write`. Error codes: 404 `not_found` (index); 409
+        `idempotency_request_in_progress`; 422 `idempotency_key_reused`.
+      security:
+        - bearerAuth: ['indexes:write']
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The document is gone (or never existed).
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteDocumentResponse'
+              example:
+                index_id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+                doc_id: doc-1
+                deleted: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/indexes/{index_id}/search:
+    parameters:
+      - $ref: '#/components/parameters/IndexId'
+    post:
+      operationId: searchIndex
+      x-error-codes:
+        '400': [bad_request]
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended, insufficient_scope]
+        '404': [not_found]
+        '409': [index_not_ready, model_revision_unavailable, representation_unavailable]
+        '413': [payload_too_large]
+        '415': [unsupported_media_type]
+        '422': [validation_error, unsupported_filter, attention_limit_exceeded]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded, usage_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Search]
+      summary: Search an index
+      description: |
+        Encodes the query with the index's pinned model and runs the index's search profile
+        (see `SearchProfile`): every query routing slot retrieves its `slot_hits` nearest
+        document routing slots (restricted by `filter`), the hits are aggregated into a
+        shortlist of `shortlist` chunks, the shortlist is rescored exactly with
+        `routing_score`, the best `candidate_k` of those also get `value_score` and the final
+        `score`, and the best `top_k` chunks are returned. Results are chunks, not documents:
+        one document can appear several times. Every result carries `score`, `routing_score`
+        and `value_score`. The slot search is exhaustive for indexes of up to 20,000 chunks
+        and approximate above (see `SearchProfile`).
+
+        * `explain: true` adds the four explanation tensors per result, computed from the
+          stored slots exactly as `score` computes them.
+        * `return_attention: true` adds the **query's** slot→token attention and tokens.
+          Document attention is not available for stored documents because their text is not
+          retained; use `score` with the text to get both sides.
+        * `return_vectors: true` adds each hit's stored routing and value slots.
+
+        `candidate_k` is the number of shortlisted chunks that get the full score. It defaults
+        to the search profile's `default_candidate_k` (100), must be at least `top_k` and at
+        most the profile's `max_candidate_k`. `filter` matches exact values of top-level
+        metadata fields; all fields must match. Unsupported filter operators fail with 422
+        `unsupported_filter`.
+
+        A search is billed only when it succeeds (2xx); see "Retries and idempotency".
+
+        Required scope: `indexes:read`. Error codes: 404 `not_found`; 409 `index_not_ready`,
+        `model_revision_unavailable`, `representation_unavailable`; 422 `validation_error`,
+        `unsupported_filter`,
+        `attention_limit_exceeded`; 429 `rate_limit_exceeded`, `concurrency_limit_exceeded`,
+        `usage_limit_exceeded`.
+      security:
+        - bearerAuth: ['indexes:read']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+            examples:
+              basic:
+                summary: Top 10 with a metadata filter
+                value:
+                  query: How do I rotate a key?
+                  top_k: 10
+                  candidate_k: 100
+                  filter:
+                    source: docs
+              research:
+                summary: Explanations and stored vectors for the top 3
+                value:
+                  query: How do I rotate a key?
+                  top_k: 3
+                  explain: true
+                  return_vectors: true
+                  encoding_format: base64
+                  dtype: float16
+      responses:
+        '200':
+          description: The best `top_k` chunks, ranked.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+              examples:
+                basic:
+                  $ref: '#/components/examples/SearchResponseExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/usage:
+    get:
+      operationId: getUsage
+      x-error-codes:
+        '401': [authentication_failed, api_key_expired]
+        '403': [tenant_suspended]
+        '429': [rate_limit_exceeded, concurrency_limit_exceeded]
+        '500': [internal_error]
+        '503': [service_unavailable]
+      tags: [Usage]
+      summary: Get usage and limits
+      description: >-
+        Returns the calling tenant's usage for the current UTC calendar month, its limits, the
+        remaining allowance, and the calling key's own settings. Token and request totals are
+        decimal strings. Any valid key may call it.
+      responses:
+        '200':
+          description: Usage for the current month.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+              examples:
+                default:
+                  $ref: '#/components/examples/UsageSummaryExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Tenant API key sent as `Authorization: Bearer <key>`. Operation security requirements
+        list the key scope they need (OpenAPI 3.1 roles for non-OAuth schemes).
+
+  headers:
+    RequestId:
+      description: Server-assigned request identifier. Present on every response.
+      required: true
+      schema:
+        type: string
+        examples: [req-7f3a9c2e41]
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        examples: [12]
+    RetryAfterOptional:
+      description: Seconds to wait before retrying, when the server can estimate it.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        examples: [5]
+    IdempotentReplayed:
+      description: >-
+        `true` when this response is a stored replay of an earlier request with the same
+        `Idempotency-Key`. Absent otherwise.
+      required: false
+      schema:
+        type: string
+        enum: ['true']
+    WwwAuthenticate:
+      description: RFC 6750 challenge.
+      required: true
+      schema:
+        type: string
+        examples: ['Bearer realm="bb-embed", error="invalid_token"']
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Client-generated key (a UUID is recommended) that makes a retried mutation safe. Scoped
+        to the tenant and the operation; kept 24 hours. See "Retries and idempotency".
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        pattern: '^[!-~]+$'
+        examples: [5f0c6b8e-2a3d-4c1e-9f7a-1b2c3d4e5f60]
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque `next_cursor` from the previous page. Omit for the first page.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 1024
+    IndexId:
+      name: index_id
+      in: path
+      required: true
+      description: Opaque index identifier returned by `createIndex`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        examples: [0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90]
+    DocId:
+      name: doc_id
+      in: path
+      required: true
+      description: >-
+        The caller's document identifier, percent-encoded as a single path segment (a `/` in
+        the id is sent as `%2F`).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        examples: [doc-1]
+    ModelName:
+      name: model
+      in: path
+      required: true
+      description: Immutable model id (`breadbowl-embed-v1.3`) or alias (`breadbowl-embed`).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        examples: [breadbowl-embed-v1.3]
+
+  responses:
+    BadRequest:
+      description: >-
+        `bad_request`: the request could not be parsed (malformed JSON, invalid header
+        encoding).
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: bad_request
+              message: Body is not valid JSON
+    Unauthorized:
+      description: >-
+        `authentication_failed`: the key is missing, malformed, unknown or revoked.
+        `api_key_expired`: the key passed its `expires_at`.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WwwAuthenticate'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            authenticationFailed:
+              value:
+                error:
+                  code: authentication_failed
+                  message: Authentication failed
+            expired:
+              value:
+                error:
+                  code: api_key_expired
+                  message: API key expired at 2026-12-01T00:00:00Z
+    Forbidden:
+      description: >-
+        `tenant_suspended`: the tenant is suspended. `insufficient_scope`: the key lacks the
+        scope the operation requires (`details.required_scope`).
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            suspended:
+              value:
+                error:
+                  code: tenant_suspended
+                  message: Tenant is suspended
+            insufficientScope:
+              value:
+                error:
+                  code: insufficient_scope
+                  message: API key lacks scope indexes:write
+                  details:
+                    required_scope: indexes:write
+    NotFound:
+      description: >-
+        `not_found`: the tenant-scoped resource (model, index or document) does not exist. A
+        resource of another tenant is reported as not found.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: not_found
+              message: index not found
+    Conflict:
+      description: |
+        * `index_name_conflict`: an index with this name exists (`details.index_id`).
+        * `index_not_ready`: the index is `creating` or in `error` (`details.status`); retry after
+          `Retry-After` only when `details.status` is `creating`.
+        * `model_revision_unavailable`: the index's pinned model revision is no longer served by
+          this deployment. Not retryable; create a new index and re-ingest.
+        * `representation_unavailable`: the revision is served, but with a different
+          representation than the index was built with, for example another compute dtype
+          (`details.representation`, `details.served`). Writing or searching would mix
+          incomparable vectors, so it is refused; it resolves when the deployment serves the
+          pinned representation again, otherwise create a new index.
+        * `idempotency_request_in_progress`: a request with this `Idempotency-Key` is still
+          running; retry after `Retry-After`.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfterOptional'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            indexNameConflict:
+              value:
+                error:
+                  code: index_name_conflict
+                  message: An index named production already exists
+                  details:
+                    index_id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+            modelRevisionUnavailable:
+              value:
+                error:
+                  code: model_revision_unavailable
+                  message: >-
+                    Index is pinned to breadbowl-embed-alpha revision version-a71, which this
+                    deployment no longer serves; create a new index
+                  details:
+                    model:
+                      id: breadbowl-embed-alpha
+                      revision: version-a71
+            inProgress:
+              value:
+                error:
+                  code: idempotency_request_in_progress
+                  message: A request with this Idempotency-Key is still in progress
+    PayloadTooLarge:
+      description: '`payload_too_large`: the request body exceeds 5 MiB.'
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: payload_too_large
+              message: Request body exceeds 5242880 bytes
+    UnsupportedMediaType:
+      description: '`unsupported_media_type`: the body is not `application/json`.'
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: unsupported_media_type
+              message: Content-Type must be application/json
+    UnprocessableEntity:
+      description: |
+        * `validation_error`: the request violates this contract; `issues` lists each problem.
+        * `invalid_cursor`: the cursor is malformed, expired, or belongs to another list.
+        * `unsupported_model`: the model id or alias is unknown, or deprecated where a new index
+          would pin it.
+        * `unsupported_search_profile`: the model has no search profile with that name.
+        * `unsupported_filter`: the filter uses an operator or value type the profile does not
+          support.
+        * `attention_limit_exceeded`: the request would return more attention values than
+          allowed (`details.requested_values`, `details.limit`).
+        * `document_limit_exceeded`: new documents would exceed the tenant's stored-document
+          limit (`details.limit`, `details.current`, `details.new_documents`).
+        * `chunk_limit_exceeded`: the documents of one `upsertDocuments` request chunk into more
+          than `limits.max_chunks_per_upsert` chunks (`details.limit`, `details.requested`);
+          split the request.
+        * `idempotency_key_reused`: the `Idempotency-Key` was used with a different body.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            validation:
+              value:
+                error:
+                  code: validation_error
+                  message: Request validation failed
+                  issues:
+                    - path: [documents, 3, doc_id]
+                      code: duplicate
+                      message: doc_id values must be unique within a request
+            attentionLimit:
+              value:
+                error:
+                  code: attention_limit_exceeded
+                  message: >-
+                    The request would return 1228800 attention values; the limit is 1048576.
+                    Use attention_heads=mean or fewer documents.
+                  details:
+                    requested_values: 1228800
+                    limit: 1048576
+            documentLimit:
+              value:
+                error:
+                  code: document_limit_exceeded
+                  message: document limit of 100000 would be exceeded
+                  details:
+                    limit: 100000
+                    current: 99990
+                    new_documents: 25
+            idempotencyKeyReused:
+              value:
+                error:
+                  code: idempotency_key_reused
+                  message: Idempotency-Key was already used with a different request body
+    TooManyRequests:
+      description: |
+        * `rate_limit_exceeded`: requests per minute exceeded (tenant, or the key's own limit).
+          Retry after `Retry-After`.
+        * `concurrency_limit_exceeded`: too many requests in flight (tenant, or the key's own
+          limit). Retry after `Retry-After`.
+        * `usage_limit_exceeded`: the monthly input-token allowance is exhausted. Not retryable
+          in the usual sense: `Retry-After` points to the start of the next UTC month, which can
+          be weeks away. Only billed operations (`encode`, `score`, `upsertDocuments`,
+          `searchIndex`) return it.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            rate:
+              value:
+                error:
+                  code: rate_limit_exceeded
+                  message: Tenant request rate exceeded
+            concurrency:
+              value:
+                error:
+                  code: concurrency_limit_exceeded
+                  message: Tenant concurrency limit exceeded
+            monthly:
+              value:
+                error:
+                  code: usage_limit_exceeded
+                  message: Monthly input-token allowance exhausted
+    InternalError:
+      description: '`internal_error`: an unexpected server error. Safe to retry with backoff.'
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: internal_error
+              message: Internal server error
+    ServiceUnavailable:
+      description: >-
+        `service_unavailable`: model capacity or a storage dependency is temporarily
+        unavailable. Retry with backoff, honoring `Retry-After` when present.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/RequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfterOptional'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: service_unavailable
+              message: Model worker is at capacity
+
+  schemas:
+    # ---------------------------------------------------------------- errors
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >-
+            Stable machine-readable code. The codes each status can carry are listed in the API
+            description; treat unknown codes by HTTP status.
+          examples: [validation_error]
+        message:
+          type: string
+          description: Human-readable explanation. Not stable; do not parse.
+        issues:
+          type: array
+          description: Present only with `validation_error`.
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+        details:
+          description: >-
+            Structured data for some codes. Its shape is fixed per code; `x-error-details` on
+            this schema maps each such code to its schema (`insufficient_scope` →
+            `InsufficientScopeDetails`, and so on). Codes not in the map carry no `details`.
+          anyOf:
+            - $ref: '#/components/schemas/InsufficientScopeDetails'
+            - $ref: '#/components/schemas/IndexNameConflictDetails'
+            - $ref: '#/components/schemas/IndexNotReadyDetails'
+            - $ref: '#/components/schemas/ModelRevisionUnavailableDetails'
+            - $ref: '#/components/schemas/UnsupportedModelDetails'
+            - $ref: '#/components/schemas/UnsupportedSearchProfileDetails'
+            - $ref: '#/components/schemas/UnsupportedFilterDetails'
+            - $ref: '#/components/schemas/AttentionLimitDetails'
+            - $ref: '#/components/schemas/DocumentLimitDetails'
+            - $ref: '#/components/schemas/RepresentationUnavailableDetails'
+            - $ref: '#/components/schemas/ChunkLimitDetails'
+      x-error-details:
+        insufficient_scope: InsufficientScopeDetails
+        index_name_conflict: IndexNameConflictDetails
+        index_not_ready: IndexNotReadyDetails
+        model_revision_unavailable: ModelRevisionUnavailableDetails
+        unsupported_model: UnsupportedModelDetails
+        unsupported_search_profile: UnsupportedSearchProfileDetails
+        unsupported_filter: UnsupportedFilterDetails
+        attention_limit_exceeded: AttentionLimitDetails
+        document_limit_exceeded: DocumentLimitDetails
+        representation_unavailable: RepresentationUnavailableDetails
+        chunk_limit_exceeded: ChunkLimitDetails
+    InsufficientScopeDetails:
+      type: object
+      required: [required_scope]
+      properties:
+        required_scope:
+          $ref: '#/components/schemas/ApiKeyScope'
+    IndexNameConflictDetails:
+      type: object
+      required: [index_id]
+      properties:
+        index_id:
+          type: string
+          description: The existing index with that name.
+    IndexNotReadyDetails:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: '`creating` is retryable after `Retry-After`; `error` is not (delete and recreate).'
+          enum: [creating, error]
+    ModelRevisionUnavailableDetails:
+      type: object
+      required: [model]
+      properties:
+        model:
+          $ref: '#/components/schemas/ModelRef'
+    UnsupportedModelDetails:
+      type: object
+      required: [served]
+      properties:
+        served:
+          type: array
+          description: Model ids and aliases this deployment serves.
+          items:
+            type: string
+    UnsupportedSearchProfileDetails:
+      type: object
+      required: [search_profiles]
+      properties:
+        search_profiles:
+          type: array
+          description: Profile names the model offers.
+          items:
+            type: string
+    UnsupportedFilterDetails:
+      type: object
+      required: [field]
+      properties:
+        field:
+          type: string
+          description: The metadata field whose condition is not supported.
+        supported_operations:
+          type: array
+          items:
+            type: string
+            enum: [eq]
+        declared_type:
+          type: string
+          description: Present when the value contradicts the index's `metadata_schema`.
+          enum: [string, number, boolean]
+    AttentionLimitDetails:
+      type: object
+      required: [requested_values, limit]
+      properties:
+        requested_values:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 0
+    RepresentationUnavailableDetails:
+      type: object
+      required: [representation, served]
+      properties:
+        representation:
+          $ref: '#/components/schemas/Representation'
+          description: The representation the index is pinned to.
+        served:
+          description: What the deployment serves now; `null` while it cannot tell.
+          oneOf:
+            - $ref: '#/components/schemas/Representation'
+            - type: 'null'
+    ChunkLimitDetails:
+      type: object
+      required: [limit, requested]
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+        requested:
+          type: integer
+          minimum: 0
+          description: Chunks the request's documents produced.
+    DocumentLimitDetails:
+      type: object
+      required: [limit, current, new_documents]
+      properties:
+        limit:
+          type: integer
+          minimum: 0
+        current:
+          type: integer
+          minimum: 0
+        new_documents:
+          type: integer
+          minimum: 0
+    ValidationIssue:
+      type: object
+      required: [path, message]
+      properties:
+        path:
+          type: array
+          description: Location of the problem in the request body.
+          items:
+            type: [string, integer]
+        code:
+          type: string
+          description: Machine-readable kind of problem, such as `too_big` or `duplicate`.
+        message:
+          type: string
+
+    # ---------------------------------------------------------------- health
+    HealthStatus:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+    ReadinessStatus:
+      type: object
+      required: [ok, model]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        model:
+          $ref: '#/components/schemas/ModelRef'
+    NotReadyStatus:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: false
+
+    # ---------------------------------------------------------------- models
+    ModelRef:
+      type: object
+      description: The immutable identity of the model that produced a response.
+      required: [id, revision]
+      properties:
+        id:
+          type: string
+          examples: [breadbowl-embed-v1.3]
+        revision:
+          type: string
+          description: Commit of the model's Hugging Face repository.
+          examples: [6f1d2c9a4b7e8f0123456789abcdef0123456789]
+    Model:
+      type: object
+      required:
+        - id
+        - name
+        - revision
+        - aliases
+        - status
+        - default
+        - identity
+        - representation
+        - dimensions
+        - token_limits
+        - text_formats
+        - scoring_defaults
+        - default_search_profile
+        - search_profiles
+        - capabilities
+        - limits
+        - created_at
+      properties:
+        id:
+          type: string
+          description: >-
+            Immutable id. One id always names exactly one revision; new weights get a new id.
+          examples: [breadbowl-embed-v1.3]
+        name:
+          type: string
+          examples: [BreadBowl Embed v1.3]
+        revision:
+          type: string
+          description: Commit of the Hugging Face repository the weights were loaded from.
+        aliases:
+          type: array
+          description: >-
+            Mutable friendly names that currently resolve to this id. Indexes always pin the
+            resolved id, never an alias.
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, deprecated]
+          description: >-
+            `deprecated` models still serve `encode`, `score` and existing indexes, but new
+            indexes cannot pin them.
+        default:
+          type: boolean
+          description: Whether requests that omit `model` use this model.
+        identity:
+          $ref: '#/components/schemas/ModelIdentity'
+        representation:
+          $ref: '#/components/schemas/Representation'
+          description: >-
+            What stored vectors of this model depend on, including the compute dtype (`bfloat16`
+            on the hosted deployment). Indexes pin it.
+        dimensions:
+          $ref: '#/components/schemas/ModelDimensions'
+        token_limits:
+          $ref: '#/components/schemas/TokenLimits'
+        text_formats:
+          $ref: '#/components/schemas/TextFormats'
+        scoring_defaults:
+          $ref: '#/components/schemas/ScoringParameters'
+        default_search_profile:
+          type: string
+          description: Profile a new index gets when `search_profile` is omitted.
+        search_profiles:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchProfile'
+        capabilities:
+          $ref: '#/components/schemas/ModelCapabilities'
+        limits:
+          $ref: '#/components/schemas/ServiceLimits'
+        created_at:
+          type: string
+          format: date-time
+          description: When this deployment started serving the model.
+    ModelIdentity:
+      type: object
+      required: [architecture, weights_sha256, huggingface, tokenizer, license]
+      properties:
+        architecture:
+          type: string
+          examples: [qkv-slot-encoder]
+        weights_sha256:
+          type: string
+          description: SHA-256 of the canonical weights file at `revision`, lowercase hex.
+          pattern: '^[0-9a-f]{64}$'
+        huggingface:
+          type: object
+          required: [repo, revision, url]
+          properties:
+            repo:
+              type: string
+              examples: [dotproductx/breadbowl-embed-v1.3]
+            revision:
+              type: string
+            url:
+              type: string
+              format: uri
+        tokenizer:
+          type: object
+          required: [repo, revision]
+          properties:
+            repo:
+              type: string
+            revision:
+              type: string
+        license:
+          type: string
+          description: SPDX identifier of the weights license.
+          examples: [Apache-2.0]
+    Representation:
+      type: object
+      description: >-
+        Representation identity: everything that must match for stored vectors to be
+        comparable. `id` is a digest over the model identity (id, revision, weights), the
+        dimensions, the compute dtype, the library's own representation fingerprint and the
+        fields below. The same weights computed in another dtype give different slots (bfloat16
+        and float32 scores differ by up to about 9e-3), so the compute dtype is part of it. The
+        hosted deployment computes in `bfloat16`.
+      required:
+        - id
+        - compute_dtype
+        - slot_schema_version
+        - stored_dtype
+        - routing_normalization
+        - value_normalization
+      properties:
+        id:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        compute_dtype:
+          type: string
+          description: >-
+            Dtype the model computes in: `bfloat16` (hosted), `float16`, `float32`,
+            `mixed:<dtypes>` for a model loaded in its release's native dtypes, or `unknown` for
+            indexes created by the pilot service before v1.3.
+          pattern: '^(bfloat16|float16|float32|unknown|mixed:.+)$'
+          examples: [bfloat16]
+        slot_schema_version:
+          type: integer
+          minimum: 1
+        stored_dtype:
+          type: string
+          enum: [float16]
+        routing_normalization:
+          type: string
+          enum: [l2]
+        value_normalization:
+          type: string
+          enum: [none]
+    ModelDimensions:
+      type: object
+      required: [slots, routing_dim, value_dim, attention_heads]
+      properties:
+        slots:
+          type: integer
+          minimum: 1
+          examples: [16]
+        routing_dim:
+          type: integer
+          minimum: 1
+          examples: [256]
+        value_dim:
+          type: integer
+          minimum: 1
+          examples: [256]
+        attention_heads:
+          type: integer
+          minimum: 1
+          examples: [4]
+    TokenLimits:
+      type: object
+      required: [query_max_tokens, document_max_tokens]
+      properties:
+        query_max_tokens:
+          type: integer
+          minimum: 1
+          description: Includes the instruction template and special tokens.
+          examples: [128]
+        document_max_tokens:
+          type: integer
+          minimum: 1
+          examples: [384]
+    TextFormats:
+      type: object
+      required: [query_format, document_format, default_instruction, truncation_side]
+      properties:
+        query_format:
+          type: string
+          description: Template applied to queries before tokenization.
+          examples: ["{instruction}\nQuery: {query}"]
+        document_format:
+          type: string
+          examples: ['{text}']
+        default_instruction:
+          type: string
+          examples: [Retrieve relevant documents.]
+        truncation_side:
+          type: string
+          enum: [end]
+    ScoringParameters:
+      type: object
+      description: |
+        Exact pair scoring. With `S` the query×document routing-slot cosine matrix:
+        `routing_score = mean_i tau_k · (log Σ_j exp(S[i][j] / tau_k) − log n_document_slots)`;
+        `value_score = mean_i cos(q_value[i], Σ_j softmax_j(S[i][j] / tau_v) · d_value[j])`;
+        `score = routing_weight · routing_score + value_weight · value_score`.
+      required: [routing_aggregation, tau_k, tau_v, routing_weight, value_weight]
+      properties:
+        routing_aggregation:
+          type: string
+          enum: [logmeanexp]
+        tau_k:
+          type: number
+          exclusiveMinimum: 0
+          examples: [0.02]
+        tau_v:
+          type: number
+          exclusiveMinimum: 0
+          examples: [0.1]
+        routing_weight:
+          type: number
+          minimum: 0
+          examples: [0.75]
+        value_weight:
+          type: number
+          minimum: 0
+          examples: [0.25]
+    SearchProfile:
+      type: object
+      description: |
+        A named search pipeline. An index pins one profile with these parameters for its whole
+        life; changing a parameter requires a new profile name.
+
+        `routing_slot_hits` is the model's own pipeline:
+
+        1. Each of the query's routing slots retrieves the `slot_hits` document routing slots of
+           the index (restricted by `filter`) with the highest cosine similarity.
+        2. Every chunk that was hit gets a shortlist score: the mean over the query slots of the
+           best hit that query slot had in the chunk, where a query slot without a hit in the
+           chunk counts as −1.
+        3. The best `shortlist` chunks by shortlist score are rescored exactly with
+           `routing_score` (R).
+        4. The best `candidate_k` of those by R (default `default_candidate_k`) also get
+           `value_score` (V) and `score = routing_weight · R + value_weight · V`.
+        5. The best `top_k` of those by `score` are returned.
+
+        Step 1 is exhaustive for an index of up to 20,000 chunks (the service's default limit):
+        every routing slot of the index that passes `filter` is compared with every query
+        routing slot, so results are those of the open-source library's `Index.search` on the
+        same vectors. A larger index uses an approximate nearest-neighbour (HNSW) index for
+        step 1, which can miss some of the nearest slots; its shortlist, and occasionally its
+        results, can then differ from an exhaustive search. Steps 2 to 5 are always exact. An
+        index's `chunk_count` (`getIndex`) shows which side of the limit it is on.
+
+        `pilot_maxsim` (profile name `pilot-maxsim`) describes indexes created by the pilot
+        service before v1.3 (approximate MaxSim over routing slots). Such indexes can still be listed, inspected and deleted, but
+        upserts and searches fail with 409 `model_revision_unavailable`.
+      required:
+        - name
+        - description
+        - candidate_generation
+        - slot_hits
+        - shortlist
+        - default_candidate_k
+        - max_candidate_k
+        - scoring
+        - tie_policy
+        - filter_operations
+      properties:
+        name:
+          type: string
+          examples: [default]
+        description:
+          type: string
+        candidate_generation:
+          type: string
+          enum: [routing_slot_hits, pilot_maxsim]
+        slot_hits:
+          type: [integer, 'null']
+          minimum: 1
+          description: >-
+            Document routing slots retrieved per query routing slot (step 1). `null` for
+            `pilot_maxsim`.
+          examples: [512]
+        shortlist:
+          type: [integer, 'null']
+          minimum: 1
+          description: Chunks rescored with `routing_score` (step 3). `null` for `pilot_maxsim`.
+          examples: [1024]
+        default_candidate_k:
+          type: integer
+          minimum: 1
+          description: Chunks that get the full score (step 4) when a search omits `candidate_k`.
+          examples: [100]
+        max_candidate_k:
+          type: integer
+          minimum: 1
+          description: Largest `candidate_k` a search may request; never more than `shortlist`.
+          examples: [500]
+        scoring:
+          $ref: '#/components/schemas/ScoringParameters'
+        tie_policy:
+          type: string
+          enum: [score_desc_doc_id_asc_chunk_index_asc]
+        filter_operations:
+          type: array
+          items:
+            type: string
+            enum: [eq]
+    ModelCapabilities:
+      type: object
+      required:
+        - input_types
+        - encode_returns
+        - encoding_formats
+        - dtypes
+        - attention_heads
+        - explain
+        - return_vectors
+        - offset_unit
+      properties:
+        input_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/InputType'
+        encode_returns:
+          type: array
+          items:
+            $ref: '#/components/schemas/EncodeReturnField'
+        encoding_formats:
+          type: array
+          items:
+            $ref: '#/components/schemas/EncodingFormat'
+        dtypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TensorDtype'
+        attention_heads:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttentionHeads'
+        explain:
+          type: boolean
+        return_vectors:
+          type: boolean
+        offset_unit:
+          type: string
+          enum: [codepoint]
+    ServiceLimits:
+      type: object
+      required:
+        - max_request_bytes
+        - max_inputs_per_encode
+        - max_documents_per_score
+        - max_documents_per_upsert
+        - max_query_bytes
+        - max_document_bytes
+        - max_instruction_bytes
+        - max_doc_id_length
+        - max_metadata_keys
+        - max_metadata_bytes
+        - max_top_k
+        - max_candidate_k
+        - max_attention_values_per_request
+        - max_chunks_per_upsert
+        - max_page_size
+      properties:
+        max_request_bytes:
+          type: integer
+          examples: [5242880]
+        max_inputs_per_encode:
+          type: integer
+          examples: [50]
+        max_documents_per_score:
+          type: integer
+          examples: [50]
+        max_documents_per_upsert:
+          type: integer
+          examples: [50]
+        max_query_bytes:
+          type: integer
+          examples: [8192]
+        max_document_bytes:
+          type: integer
+          examples: [102400]
+        max_instruction_bytes:
+          type: integer
+          examples: [1024]
+        max_doc_id_length:
+          type: integer
+          examples: [255]
+        max_metadata_keys:
+          type: integer
+          examples: [64]
+        max_metadata_bytes:
+          type: integer
+          examples: [8192]
+        max_top_k:
+          type: integer
+          examples: [100]
+        max_candidate_k:
+          type: integer
+          examples: [500]
+        max_attention_values_per_request:
+          type: integer
+          examples: [1048576]
+        max_chunks_per_upsert:
+          type: integer
+          description: Chunks one `upsertDocuments` request may produce (encoding takes about 0.3–0.45 s per chunk).
+          examples: [128]
+        max_page_size:
+          type: integer
+          examples: [100]
+    ModelList:
+      type: object
+      required: [data, has_more, next_cursor]
+      description: '`next_cursor` is a string exactly when `has_more` is `true`.'
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+        has_more:
+          type: boolean
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+
+    # ---------------------------------------------------------------- shared
+    NextCursor:
+      type: [string, 'null']
+      description: >-
+        Cursor for the next page. A string exactly when `has_more` is `true`; `null` exactly when
+        it is `false`.
+    CounterString:
+      type: string
+      description: Non-negative integer as a decimal string.
+      pattern: '^(0|[1-9][0-9]*)$'
+      examples: ['50000000']
+    InputType:
+      type: string
+      enum: [query, document]
+    EncodeReturnField:
+      type: string
+      enum: [routing, value, attention, tokens]
+    EncodingFormat:
+      type: string
+      description: >-
+        `base64`: little-endian bytes of `dtype`, base64-encoded. `float`: nested JSON arrays.
+      enum: [base64, float]
+      default: base64
+    TensorDtype:
+      type: string
+      description: >-
+        Element type of returned routing, value and attention tensors. Explanation tensors are
+        always `float32`.
+      enum: [float16, float32]
+      default: float16
+    AttentionHeads:
+      type: string
+      description: >-
+        `all`: one map per head, shape `[heads, slots, tokens]`. `mean`: the mean over heads,
+        shape `[1, slots, tokens]` (the head axis is kept so code indexes both the same way).
+      enum: [all, mean]
+      default: all
+    Instruction:
+      type: string
+      description: >-
+        Task instruction substituted into the model's `query_format`. Queries only; at most
+        1 KiB UTF-8. Defaults to the model's `default_instruction`.
+      minLength: 1
+      maxLength: 1024
+      examples: [Retrieve relevant documents.]
+    QueryText:
+      type: string
+      description: Query text, at most 8 KiB UTF-8 (the server enforces bytes).
+      minLength: 1
+      maxLength: 8192
+    DocumentText:
+      type: string
+      description: Document text, at most 100 KiB UTF-8 (the server enforces bytes).
+      minLength: 1
+      maxLength: 102400
+    DocId:
+      type: string
+      description: The caller's document identifier, unique within an index or request.
+      minLength: 1
+      maxLength: 255
+      examples: [doc-1]
+    MetadataValue:
+      type: [string, number, boolean]
+      description: A scalar. Strings are at most 1024 characters; numbers must be finite.
+      maxLength: 1024
+    Metadata:
+      type: object
+      description: >-
+        Flat key–value metadata. Keys are 1–64 characters of letters, digits, `_` and `-`
+        (no dots, so filters are unambiguous). Values are scalars. At most 64 keys and 8 KiB
+        serialized.
+      maxProperties: 64
+      propertyNames:
+        pattern: '^[A-Za-z0-9_-]{1,64}$'
+      additionalProperties:
+        $ref: '#/components/schemas/MetadataValue'
+      examples:
+        - source: docs
+          year: 2026
+          public: true
+    MetadataFilter:
+      type: object
+      description: >-
+        Exact-match filter on top-level metadata fields. Every listed field must equal the
+        given value (logical AND). Numbers compare by value; strings compare exactly.
+      minProperties: 1
+      maxProperties: 16
+      propertyNames:
+        pattern: '^[A-Za-z0-9_-]{1,64}$'
+      additionalProperties:
+        $ref: '#/components/schemas/MetadataValue'
+    MetadataSchema:
+      type: object
+      description: >-
+        Optional declared types of top-level metadata fields. Declared fields are type-checked
+        on upsert (a mismatch fails that document with `metadata_invalid`) and indexed for
+        filtering. Undeclared fields are stored and can still be filtered.
+      maxProperties: 64
+      propertyNames:
+        pattern: '^[A-Za-z0-9_-]{1,64}$'
+      additionalProperties:
+        type: string
+        enum: [string, number, boolean]
+    Usage:
+      type: object
+      description: >-
+        What this request consumed. `input_tokens` is billed; the other counts describe the
+        work done. Requests rejected before encoding consume nothing. `candidate_count` is the
+        number of documents scored (`score`) or of shortlisted chunks rescored exactly
+        (`searchIndex`).
+      required: [input_tokens, document_count, chunk_count, candidate_count, latency_ms]
+      properties:
+        input_tokens:
+          type: integer
+          minimum: 0
+        document_count:
+          type: integer
+          minimum: 0
+        chunk_count:
+          type: integer
+          minimum: 0
+        candidate_count:
+          type: integer
+          minimum: 0
+        latency_ms:
+          type: integer
+          minimum: 0
+
+    # ---------------------------------------------------------------- tensors
+    Tensor:
+      description: >-
+        A dense tensor in row-major order. `axes` names each dimension of `shape`.
+      oneOf:
+        - $ref: '#/components/schemas/Base64Tensor'
+        - $ref: '#/components/schemas/FloatTensor'
+      discriminator:
+        propertyName: encoding
+        mapping:
+          base64: '#/components/schemas/Base64Tensor'
+          float: '#/components/schemas/FloatTensor'
+    Base64Tensor:
+      type: object
+      required: [encoding, dtype, shape, axes, byte_order, data]
+      properties:
+        encoding:
+          type: string
+          const: base64
+        dtype:
+          $ref: '#/components/schemas/TensorDtype'
+        shape:
+          $ref: '#/components/schemas/TensorShape'
+        axes:
+          $ref: '#/components/schemas/TensorAxes'
+        byte_order:
+          type: string
+          const: little
+        data:
+          type: string
+          description: Base64 (RFC 4648, padded) of `product(shape) × itemsize` bytes.
+          contentEncoding: base64
+          contentMediaType: application/octet-stream
+          pattern: '^[A-Za-z0-9+/]*={0,2}$'
+    FloatTensor:
+      type: object
+      required: [encoding, dtype, shape, axes, data]
+      properties:
+        encoding:
+          type: string
+          const: float
+        dtype:
+          $ref: '#/components/schemas/TensorDtype'
+        shape:
+          $ref: '#/components/schemas/TensorShape'
+        axes:
+          $ref: '#/components/schemas/TensorAxes'
+        data:
+          description: Nested arrays whose nesting depth and lengths match `shape`.
+          anyOf:
+            - $ref: '#/components/schemas/FloatArray1D'
+            - $ref: '#/components/schemas/FloatArray2D'
+            - $ref: '#/components/schemas/FloatArray3D'
+    TensorShape:
+      type: array
+      minItems: 1
+      maxItems: 3
+      items:
+        type: integer
+        minimum: 0
+      examples: [[16, 256]]
+    TensorAxes:
+      type: array
+      description: >-
+        Axis names, one per `shape` entry: `slot`, `dim`, `head`, `token`, `query_slot`,
+        `document_slot`.
+      minItems: 1
+      maxItems: 3
+      items:
+        type: string
+        enum: [slot, dim, head, token, query_slot, document_slot]
+      examples: [[slot, dim]]
+    FloatArray1D:
+      type: array
+      items:
+        type: number
+    FloatArray2D:
+      type: array
+      items:
+        $ref: '#/components/schemas/FloatArray1D'
+    FloatArray3D:
+      type: array
+      items:
+        $ref: '#/components/schemas/FloatArray2D'
+    Token:
+      type: object
+      required: [id, text, segment, start, end]
+      properties:
+        id:
+          type: integer
+          minimum: 0
+          description: Tokenizer id.
+        text:
+          type: string
+          description: >-
+            The token's display string: the concatenation of `text` over a text's tokens equals
+            the decoded text. A byte-level token that ends inside a multi-byte character shows
+            only what precedes that character (`""` if nothing), and the token that completes it
+            shows the whole character; both report the character's offsets. U+FFFD appears only
+            for bytes that never complete a character, such as a character cut by truncation.
+        segment:
+          type: string
+          description: >-
+            `input`: comes from the caller's text (a token that merges template and input text
+            counts as `input`, with offsets covering only the input part). `template`: from the
+            instruction or the format template. `special`: a special token.
+          enum: [input, template, special]
+        start:
+          type: [integer, 'null']
+          minimum: 0
+          description: Start offset in Unicode code points into the caller's text; `null` unless `segment` is `input`.
+        end:
+          type: [integer, 'null']
+          minimum: 0
+          description: End offset (exclusive) in Unicode code points; `null` unless `segment` is `input`.
+    TextEncoding:
+      type: object
+      description: >-
+        How one text was encoded. `tokens` and `attention` appear only when requested;
+        `attention` has shape `[heads or 1, slots, token_count]` and its token axis aligns with
+        `tokens`. Each (head, slot) row is a softmax over the tokens and sums to 1.
+      required: [token_count, truncated]
+      properties:
+        token_count:
+          type: integer
+          minimum: 1
+          description: Encoded tokens, including template and special tokens.
+        truncated:
+          type: boolean
+          description: Whether the caller's text was cut to fit the token limit.
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/Token'
+        attention:
+          $ref: '#/components/schemas/Tensor'
+    Explanation:
+      type: object
+      description: |
+        The data a pair score is computed from. `i` indexes query slots, `j` document slots.
+
+        * `slot_similarity[i][j]` = cos(query routing slot i, document routing slot j). Axes
+          `[query_slot, document_slot]`.
+        * `routing_contribution[i]` = tau_k · (log Σ_j exp(slot_similarity[i][j] / tau_k) −
+          log n_document_slots): a smooth maximum of row i. `routing_score` is its mean.
+          Axes `[query_slot]`.
+        * `value_attention[i][j]` = softmax_j(slot_similarity[i][j] / tau_v); rows sum to 1.
+          Axes `[query_slot, document_slot]`.
+        * `value_slot_cosine[i]` = cos(query value slot i, Σ_j value_attention[i][j] ·
+          document value slot j), with the document value slots raw. `value_score` is its
+          mean. Axes `[query_slot]`.
+
+        All four tensors are always `float32`, independent of the request's `dtype`.
+      required: [slot_similarity, routing_contribution, value_attention, value_slot_cosine]
+      properties:
+        slot_similarity:
+          $ref: '#/components/schemas/Float32Tensor'
+        routing_contribution:
+          $ref: '#/components/schemas/Float32Tensor'
+        value_attention:
+          $ref: '#/components/schemas/Float32Tensor'
+        value_slot_cosine:
+          $ref: '#/components/schemas/Float32Tensor'
+    Float32Tensor:
+      description: >-
+        A `Tensor` whose `dtype` is always `float32` (explanation tensors): a `Base64Tensor` or a
+        `FloatTensor` with `dtype: float32`.
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/Base64Tensor'
+            - $ref: '#/components/schemas/Float32Dtype'
+        - allOf:
+            - $ref: '#/components/schemas/FloatTensor'
+            - $ref: '#/components/schemas/Float32Dtype'
+    Float32Dtype:
+      type: object
+      required: [dtype]
+      properties:
+        dtype:
+          type: string
+          const: float32
+    SlotVectors:
+      type: object
+      required: [routing, value]
+      properties:
+        routing:
+          $ref: '#/components/schemas/Tensor'
+        value:
+          $ref: '#/components/schemas/Tensor'
+
+    # ---------------------------------------------------------------- encode
+    EncodeRequest:
+      type: object
+      additionalProperties: false
+      required: [input, input_type]
+      properties:
+        model:
+          type: string
+          description: Model id or alias. Defaults to the deployment's default model.
+          examples: [breadbowl-embed-v1.3]
+        input:
+          description: >-
+            One text or 1–50 texts. Each query is at most 8 KiB UTF-8, each document at most
+            100 KiB UTF-8.
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 102400
+            - type: array
+              minItems: 1
+              maxItems: 50
+              items:
+                type: string
+                minLength: 1
+                maxLength: 102400
+        input_type:
+          $ref: '#/components/schemas/InputType'
+        instruction:
+          $ref: '#/components/schemas/Instruction'
+        return:
+          type: array
+          description: >-
+            Which parts to return. Generated SDKs may rename this field (for example
+            `return_`) where `return` is a keyword.
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/EncodeReturnField'
+          default: [routing, value]
+        encoding_format:
+          $ref: '#/components/schemas/EncodingFormat'
+        dtype:
+          $ref: '#/components/schemas/TensorDtype'
+        attention_heads:
+          $ref: '#/components/schemas/AttentionHeads'
+    EncodeResponse:
+      type: object
+      required: [model, input_type, data, usage]
+      properties:
+        model:
+          $ref: '#/components/schemas/ModelRef'
+        input_type:
+          $ref: '#/components/schemas/InputType'
+        instruction:
+          type: string
+          description: The instruction used (queries only).
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/EncodedText'
+        usage:
+          $ref: '#/components/schemas/Usage'
+    EncodedText:
+      allOf:
+        - $ref: '#/components/schemas/TextEncoding'
+        - type: object
+          required: [index]
+          properties:
+            index:
+              type: integer
+              minimum: 0
+              description: Position of the text in `input`.
+            routing:
+              description: Routing slots, shape `[slots, routing_dim]`, L2-normalized.
+              $ref: '#/components/schemas/Tensor'
+            value:
+              description: Value slots, shape `[slots, value_dim]`, raw.
+              $ref: '#/components/schemas/Tensor'
+
+    # ---------------------------------------------------------------- score
+    ScoreRequest:
+      type: object
+      additionalProperties: false
+      required: [query, documents]
+      properties:
+        model:
+          type: string
+          description: Model id or alias. Defaults to the deployment's default model.
+        query:
+          $ref: '#/components/schemas/QueryText'
+        instruction:
+          $ref: '#/components/schemas/Instruction'
+        documents:
+          type: array
+          description: 1–50 documents with unique `doc_id`s.
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/ScoreDocument'
+        explain:
+          type: boolean
+          default: false
+          description: Add the four explanation tensors to every result.
+        return_attention:
+          type: boolean
+          default: false
+          description: Add slot→token attention and tokens for the query and every document.
+        attention_heads:
+          $ref: '#/components/schemas/AttentionHeads'
+        encoding_format:
+          $ref: '#/components/schemas/EncodingFormat'
+        dtype:
+          $ref: '#/components/schemas/TensorDtype'
+    ScoreDocument:
+      type: object
+      additionalProperties: false
+      required: [doc_id, text]
+      properties:
+        doc_id:
+          $ref: '#/components/schemas/DocId'
+        text:
+          $ref: '#/components/schemas/DocumentText'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+    ScoreResponse:
+      type: object
+      required: [model, scoring, query, results, usage]
+      properties:
+        model:
+          $ref: '#/components/schemas/ModelRef'
+        scoring:
+          $ref: '#/components/schemas/ScoringParameters'
+        query:
+          $ref: '#/components/schemas/TextEncoding'
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScoreResult'
+        usage:
+          $ref: '#/components/schemas/Usage'
+    ScoreResult:
+      type: object
+      required: [index, doc_id, score, routing_score, value_score, metadata, document]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: Position of the document in the request.
+        doc_id:
+          $ref: '#/components/schemas/DocId'
+        score:
+          type: number
+          description: '`routing_weight · routing_score + value_weight · value_score`.'
+        routing_score:
+          type: number
+          description: Routing score R (log-mean-exp over the slot cosine matrix).
+        value_score:
+          type: number
+          description: Value score V (mean value-readout cosine).
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        document:
+          $ref: '#/components/schemas/TextEncoding'
+        explanation:
+          $ref: '#/components/schemas/Explanation'
+
+    # ---------------------------------------------------------------- indexes
+    ChunkingConfig:
+      type: object
+      additionalProperties: false
+      description: >-
+        Token-window chunking for stored documents. `max_tokens` may not exceed the model's
+        `document_max_tokens`; `overlap_tokens` must be less than `max_tokens`;
+        `minimum_chunk_tokens` may not exceed `max_tokens`.
+      properties:
+        strategy:
+          type: string
+          enum: [token_window]
+          default: token_window
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 384
+          default: 384
+        overlap_tokens:
+          type: integer
+          minimum: 0
+          default: 64
+        minimum_chunk_tokens:
+          type: integer
+          minimum: 0
+          default: 32
+    ResolvedChunkingConfig:
+      type: object
+      required: [strategy, max_tokens, overlap_tokens, minimum_chunk_tokens]
+      properties:
+        strategy:
+          type: string
+          enum: [token_window]
+        max_tokens:
+          type: integer
+        overlap_tokens:
+          type: integer
+        minimum_chunk_tokens:
+          type: integer
+    CreateIndexRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Unique within the tenant.
+        model:
+          type: string
+          description: >-
+            Model id or alias; resolved and pinned at creation. Defaults to the default model.
+        search_profile:
+          type: string
+          description: Search profile name; defaults to the model's `default_search_profile`.
+        text_retention:
+          type: string
+          enum: [none]
+          default: none
+        chunking:
+          $ref: '#/components/schemas/ChunkingConfig'
+        metadata_schema:
+          $ref: '#/components/schemas/MetadataSchema'
+    IndexStatus:
+      type: string
+      description: >-
+        `creating`: not yet accepting documents or searches. `ready`: usable. `error`:
+        provisioning failed; delete and recreate.
+      enum: [creating, ready, error]
+    Index:
+      type: object
+      description: >-
+        A managed index. Indexes created by the pilot service before v1.3 report the model they
+        were built with, a representation with `compute_dtype: unknown`, and the search profile
+        named `pilot-maxsim` (`candidate_generation: pilot_maxsim`); they can be listed,
+        inspected and deleted, but `upsertDocuments` and `searchIndex` fail with 409
+        `model_revision_unavailable` because this deployment no longer serves their model.
+      required:
+        - id
+        - name
+        - model
+        - representation
+        - search_profile
+        - text_retention
+        - chunking
+        - metadata_schema
+        - status
+        - document_count
+        - chunk_count
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Opaque identifier.
+        name:
+          type: string
+        model:
+          $ref: '#/components/schemas/ModelRef'
+        representation:
+          $ref: '#/components/schemas/Representation'
+        search_profile:
+          $ref: '#/components/schemas/SearchProfile'
+        text_retention:
+          type: string
+          enum: [none]
+        chunking:
+          $ref: '#/components/schemas/ResolvedChunkingConfig'
+        metadata_schema:
+          $ref: '#/components/schemas/MetadataSchema'
+        status:
+          $ref: '#/components/schemas/IndexStatus'
+        document_count:
+          type: integer
+          minimum: 0
+        chunk_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+    IndexList:
+      type: object
+      required: [data, has_more, next_cursor]
+      description: '`next_cursor` is a string exactly when `has_more` is `true`.'
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Index'
+        has_more:
+          type: boolean
+        next_cursor:
+          $ref: '#/components/schemas/NextCursor'
+    DeleteIndexResponse:
+      type: object
+      required: [index_id, deleted, documents_deleted]
+      properties:
+        index_id:
+          type: string
+        deleted:
+          type: boolean
+          const: true
+        documents_deleted:
+          type: integer
+          minimum: 0
+
+    # ---------------------------------------------------------------- documents
+    DocumentInput:
+      type: object
+      additionalProperties: false
+      required: [doc_id, text]
+      properties:
+        doc_id:
+          $ref: '#/components/schemas/DocId'
+        text:
+          $ref: '#/components/schemas/DocumentText'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+    UpsertDocumentsRequest:
+      type: object
+      additionalProperties: false
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          description: 1–50 documents with unique `doc_id`s.
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/DocumentInput'
+    DocumentError:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+          description: |
+            * `document_empty`: the text produced no chunks.
+            * `metadata_invalid`: metadata violates the index's `metadata_schema`.
+            * `encoding_failed`: the model worker failed on this document.
+            * `storage_failed`: writing vectors failed; the previous version, if any, remains.
+          examples: [document_empty]
+        message:
+          type: string
+        retryable:
+          type: boolean
+          description: Whether resending the same document may succeed.
+    DocumentOutcome:
+      type: object
+      required: [doc_id, status]
+      properties:
+        doc_id:
+          $ref: '#/components/schemas/DocId'
+        status:
+          type: string
+          enum: [upserted, failed]
+        content_sha256:
+          type: string
+          description: SHA-256 of the UTF-8 text (present when `upserted`).
+          pattern: '^[0-9a-f]{64}$'
+        token_count:
+          type: integer
+          minimum: 0
+          description: Tokens in the whole document before chunking (present when `upserted`).
+        chunk_count:
+          type: integer
+          minimum: 0
+          description: Chunks stored (present when `upserted`).
+        truncated:
+          type: boolean
+          description: Always `false` for indexes; long documents are chunked, not truncated.
+        error:
+          $ref: '#/components/schemas/DocumentError'
+    UpsertDocumentsResponse:
+      type: object
+      required:
+        - index_id
+        - documents
+        - upserted_documents
+        - upserted_chunks
+        - failed_documents
+        - usage
+      properties:
+        index_id:
+          type: string
+        documents:
+          type: array
+          description: One outcome per requested document, in request order.
+          items:
+            $ref: '#/components/schemas/DocumentOutcome'
+        upserted_documents:
+          type: integer
+          minimum: 0
+        upserted_chunks:
+          type: integer
+          minimum: 0
+        failed_documents:
+          type: integer
+          minimum: 0
+        usage:
+          $ref: '#/components/schemas/Usage'
+    StoredChunk:
+      type: object
+      required:
+        - chunk_id
+        - chunk_index
+        - token_start
+        - token_end
+        - token_count
+        - char_start
+        - char_end
+      properties:
+        chunk_id:
+          type: string
+        chunk_index:
+          type: integer
+          minimum: 0
+        token_start:
+          type: integer
+          minimum: 0
+          description: First token of the chunk in the document's token sequence.
+        token_end:
+          type: integer
+          minimum: 0
+          description: End token (exclusive).
+        token_count:
+          type: integer
+          minimum: 1
+        char_start:
+          type: [integer, 'null']
+          minimum: 0
+          description: >-
+            Start of the chunk in the original text, in Unicode code points. `null` only for
+            chunks stored by the pilot service before v1.3, which did not record offsets.
+        char_end:
+          type: [integer, 'null']
+          minimum: 0
+          description: End of the chunk (exclusive), in Unicode code points; `null` as for `char_start`.
+        vectors:
+          $ref: '#/components/schemas/SlotVectors'
+    StoredDocument:
+      type: object
+      required:
+        - index_id
+        - doc_id
+        - status
+        - content_sha256
+        - metadata
+        - token_count
+        - chunk_count
+        - chunks
+        - created_at
+        - updated_at
+      properties:
+        index_id:
+          type: string
+        doc_id:
+          $ref: '#/components/schemas/DocId'
+        status:
+          type: string
+          description: >-
+            `ready`: searchable. `indexing`: stored but not yet searchable. `error`: vectors
+            could not be written (see `error`); upsert the document again.
+          enum: [ready, indexing, error]
+        error:
+          type: [string, 'null']
+        content_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        token_count:
+          type: integer
+          minimum: 0
+        chunk_count:
+          type: integer
+          minimum: 0
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoredChunk'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DeleteDocumentResponse:
+      type: object
+      required: [index_id, doc_id, deleted]
+      properties:
+        index_id:
+          type: string
+        doc_id:
+          $ref: '#/components/schemas/DocId'
+        deleted:
+          type: boolean
+          description: '`false` when the document did not exist.'
+
+    # ---------------------------------------------------------------- search
+    SearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          $ref: '#/components/schemas/QueryText'
+        instruction:
+          $ref: '#/components/schemas/Instruction'
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+        candidate_k:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: >-
+            Shortlisted chunks that get the full score (routing and value). Defaults to the
+            profile's `default_candidate_k`; must be at least `top_k` and at most the profile's
+            `max_candidate_k`.
+        filter:
+          $ref: '#/components/schemas/MetadataFilter'
+        explain:
+          type: boolean
+          default: false
+        return_attention:
+          type: boolean
+          default: false
+          description: Add the query's slot→token attention and tokens.
+        return_vectors:
+          type: boolean
+          default: false
+          description: Add each hit's stored routing and value slots.
+        attention_heads:
+          $ref: '#/components/schemas/AttentionHeads'
+        encoding_format:
+          $ref: '#/components/schemas/EncodingFormat'
+        dtype:
+          $ref: '#/components/schemas/TensorDtype'
+    SearchResult:
+      type: object
+      required:
+        - doc_id
+        - chunk_id
+        - chunk_index
+        - token_start
+        - token_end
+        - char_start
+        - char_end
+        - score
+        - routing_score
+        - value_score
+        - metadata
+      properties:
+        doc_id:
+          $ref: '#/components/schemas/DocId'
+        chunk_id:
+          type: string
+        chunk_index:
+          type: integer
+          minimum: 0
+        token_start:
+          type: integer
+          minimum: 0
+        token_end:
+          type: integer
+          minimum: 0
+        char_start:
+          type: integer
+          minimum: 0
+          description: Start of the chunk in the original text, in Unicode code points.
+        char_end:
+          type: integer
+          minimum: 0
+        score:
+          type: number
+        routing_score:
+          type: number
+        value_score:
+          type: number
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        explanation:
+          $ref: '#/components/schemas/Explanation'
+        vectors:
+          $ref: '#/components/schemas/SlotVectors'
+    SearchResponse:
+      type: object
+      required: [index_id, model, search_profile, scoring, top_k, candidate_k, query, results, usage]
+      properties:
+        index_id:
+          type: string
+        model:
+          $ref: '#/components/schemas/ModelRef'
+        search_profile:
+          $ref: '#/components/schemas/SearchProfile'
+          description: The index's pinned search profile with all its parameters.
+        scoring:
+          $ref: '#/components/schemas/ScoringParameters'
+          description: The scoring parameters used for `score`, `routing_score` and `value_score`.
+        top_k:
+          type: integer
+          minimum: 1
+          description: The resolved `top_k` (the request's value or the default).
+        candidate_k:
+          type: integer
+          minimum: 1
+          description: The resolved `candidate_k` (the request's value or the profile's default).
+        query:
+          $ref: '#/components/schemas/TextEncoding'
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    # ---------------------------------------------------------------- usage
+    UsageSummary:
+      type: object
+      required: [period_start, period_end, usage, limits, remaining, api_key]
+      properties:
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+          description: Exclusive end of the current UTC month.
+        usage:
+          type: object
+          required: [input_tokens, requests, encodes, scores, searches, document_upserts, documents]
+          properties:
+            input_tokens:
+              $ref: '#/components/schemas/CounterString'
+            requests:
+              $ref: '#/components/schemas/CounterString'
+            encodes:
+              $ref: '#/components/schemas/CounterString'
+            scores:
+              $ref: '#/components/schemas/CounterString'
+            searches:
+              $ref: '#/components/schemas/CounterString'
+            document_upserts:
+              $ref: '#/components/schemas/CounterString'
+            documents:
+              type: integer
+              minimum: 0
+              description: >-
+                Documents currently stored across all indexes. A count of stored resources,
+                hence a JSON integer like `limits.documents` and `remaining.documents`; the
+                other fields of `usage` accumulate over the month, hence decimal strings. The
+                monthly counters count only requests that completed with 2xx.
+        limits:
+          type: object
+          required: [input_tokens, documents, requests_per_minute, max_concurrent_requests]
+          properties:
+            input_tokens:
+              $ref: '#/components/schemas/CounterString'
+            documents:
+              type: integer
+              minimum: 1
+            requests_per_minute:
+              type: integer
+              minimum: 1
+            max_concurrent_requests:
+              type: integer
+              minimum: 1
+        remaining:
+          type: object
+          required: [input_tokens, documents]
+          properties:
+            input_tokens:
+              $ref: '#/components/schemas/CounterString'
+            documents:
+              type: integer
+              minimum: 0
+        api_key:
+          $ref: '#/components/schemas/CallingApiKey'
+    CallingApiKey:
+      type: object
+      description: The key that made this request.
+      required: [id, key_prefix, scopes, expires_at, rate_limit]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        key_prefix:
+          type: string
+          description: >-
+            First 18 characters of the key, safe to display. Keys issued since v1.3 start with
+            `bb_live_`; keys issued by the pilot start with `qkv_live_` and keep working.
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKeyScope'
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        rate_limit:
+          type: [object, 'null']
+          description: The key's own limits, applied in addition to the tenant's.
+          properties:
+            requests_per_minute:
+              type: [integer, 'null']
+              minimum: 1
+            max_concurrent_requests:
+              type: [integer, 'null']
+              minimum: 1
+    ApiKeyScope:
+      type: string
+      description: >-
+        `encode`: `POST /v1/encode`. `score`: `POST /v1/score`. `indexes:read`: list and get
+        indexes and documents, search. `indexes:write`: create and delete indexes, upsert and
+        delete documents.
+      enum: [encode, score, 'indexes:read', 'indexes:write']
+
+  examples:
+    ModelExample:
+      summary: The v1.3 model
+      value:
+        id: breadbowl-embed-v1.3
+        name: BreadBowl Embed v1.3
+        revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+        aliases: [breadbowl-embed]
+        status: active
+        default: true
+        identity:
+          architecture: qkv-slot-encoder
+          weights_sha256: 3b5d5c3712955042212316173ccf37be8a3bf4a4b0c6e2a3d1f5e7c9b2a4d6e8
+          huggingface:
+            repo: dotproductx/breadbowl-embed-v1.3
+            revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+            url: https://huggingface.co/dotproductx/breadbowl-embed-v1.3/tree/6f1d2c9a4b7e8f0123456789abcdef0123456789
+          tokenizer:
+            repo: dotproductx/breadbowl-embed-v1.3
+            revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+          license: Apache-2.0
+        representation:
+          id: sha256:9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c
+          compute_dtype: bfloat16
+          slot_schema_version: 1
+          stored_dtype: float16
+          routing_normalization: l2
+          value_normalization: none
+        dimensions:
+          slots: 16
+          routing_dim: 256
+          value_dim: 256
+          attention_heads: 4
+        token_limits:
+          query_max_tokens: 128
+          document_max_tokens: 384
+        text_formats:
+          query_format: "{instruction}\nQuery: {query}"
+          document_format: '{text}'
+          default_instruction: Retrieve relevant documents.
+          truncation_side: end
+        scoring_defaults:
+          routing_aggregation: logmeanexp
+          tau_k: 0.02
+          tau_v: 0.1
+          routing_weight: 0.75
+          value_weight: 0.25
+        default_search_profile: default
+        search_profiles:
+          - name: default
+            description: "Model pipeline: 512 slot hits per query slot, 1,024-chunk routing shortlist, 100 chunks fully scored."
+            candidate_generation: routing_slot_hits
+            slot_hits: 512
+            shortlist: 1024
+            default_candidate_k: 100
+            max_candidate_k: 500
+            scoring:
+              routing_aggregation: logmeanexp
+              tau_k: 0.02
+              tau_v: 0.1
+              routing_weight: 0.75
+              value_weight: 0.25
+            tie_policy: score_desc_doc_id_asc_chunk_index_asc
+            filter_operations: [eq]
+          - name: paper
+            description: "Reference setting from the paper: 128 slot hits per query slot, 1,024-chunk routing shortlist, 100 chunks fully scored."
+            candidate_generation: routing_slot_hits
+            slot_hits: 128
+            shortlist: 1024
+            default_candidate_k: 100
+            max_candidate_k: 500
+            scoring:
+              routing_aggregation: logmeanexp
+              tau_k: 0.02
+              tau_v: 0.1
+              routing_weight: 0.75
+              value_weight: 0.25
+            tie_policy: score_desc_doc_id_asc_chunk_index_asc
+            filter_operations: [eq]
+        capabilities:
+          input_types: [query, document]
+          encode_returns: [routing, value, attention, tokens]
+          encoding_formats: [base64, float]
+          dtypes: [float16, float32]
+          attention_heads: [all, mean]
+          explain: true
+          return_vectors: true
+          offset_unit: codepoint
+        limits:
+          max_request_bytes: 5242880
+          max_inputs_per_encode: 50
+          max_documents_per_score: 50
+          max_documents_per_upsert: 50
+          max_query_bytes: 8192
+          max_document_bytes: 102400
+          max_instruction_bytes: 1024
+          max_doc_id_length: 255
+          max_metadata_keys: 64
+          max_metadata_bytes: 8192
+          max_top_k: 100
+          max_candidate_k: 500
+          max_attention_values_per_request: 1048576
+          max_chunks_per_upsert: 128
+          max_page_size: 100
+        created_at: '2026-11-20T00:00:00Z'
+    ModelListExample:
+      summary: One served model
+      value:
+        data:
+          - id: breadbowl-embed-v1.3
+            name: BreadBowl Embed v1.3
+            revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+            aliases: [breadbowl-embed]
+            status: active
+            default: true
+            identity:
+              architecture: qkv-slot-encoder
+              weights_sha256: 3b5d5c3712955042212316173ccf37be8a3bf4a4b0c6e2a3d1f5e7c9b2a4d6e8
+              huggingface:
+                repo: dotproductx/breadbowl-embed-v1.3
+                revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+                url: https://huggingface.co/dotproductx/breadbowl-embed-v1.3/tree/6f1d2c9a4b7e8f0123456789abcdef0123456789
+              tokenizer:
+                repo: dotproductx/breadbowl-embed-v1.3
+                revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+              license: Apache-2.0
+            representation:
+              id: sha256:9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c
+              compute_dtype: bfloat16
+              slot_schema_version: 1
+              stored_dtype: float16
+              routing_normalization: l2
+              value_normalization: none
+            dimensions:
+              slots: 16
+              routing_dim: 256
+              value_dim: 256
+              attention_heads: 4
+            token_limits:
+              query_max_tokens: 128
+              document_max_tokens: 384
+            text_formats:
+              query_format: "{instruction}\nQuery: {query}"
+              document_format: '{text}'
+              default_instruction: Retrieve relevant documents.
+              truncation_side: end
+            scoring_defaults:
+              routing_aggregation: logmeanexp
+              tau_k: 0.02
+              tau_v: 0.1
+              routing_weight: 0.75
+              value_weight: 0.25
+            default_search_profile: default
+            search_profiles:
+              - name: default
+                description: "Model pipeline: 512 slot hits per query slot, 1,024-chunk routing shortlist, 100 chunks fully scored."
+                candidate_generation: routing_slot_hits
+                slot_hits: 512
+                shortlist: 1024
+                default_candidate_k: 100
+                max_candidate_k: 500
+                scoring:
+                  routing_aggregation: logmeanexp
+                  tau_k: 0.02
+                  tau_v: 0.1
+                  routing_weight: 0.75
+                  value_weight: 0.25
+                tie_policy: score_desc_doc_id_asc_chunk_index_asc
+                filter_operations: [eq]
+              - name: paper
+                description: "Reference setting from the paper: 128 slot hits per query slot, 1,024-chunk routing shortlist, 100 chunks fully scored."
+                candidate_generation: routing_slot_hits
+                slot_hits: 128
+                shortlist: 1024
+                default_candidate_k: 100
+                max_candidate_k: 500
+                scoring:
+                  routing_aggregation: logmeanexp
+                  tau_k: 0.02
+                  tau_v: 0.1
+                  routing_weight: 0.75
+                  value_weight: 0.25
+                tie_policy: score_desc_doc_id_asc_chunk_index_asc
+                filter_operations: [eq]
+            capabilities:
+              input_types: [query, document]
+              encode_returns: [routing, value, attention, tokens]
+              encoding_formats: [base64, float]
+              dtypes: [float16, float32]
+              attention_heads: [all, mean]
+              explain: true
+              return_vectors: true
+              offset_unit: codepoint
+            limits:
+              max_request_bytes: 5242880
+              max_inputs_per_encode: 50
+              max_documents_per_score: 50
+              max_documents_per_upsert: 50
+              max_query_bytes: 8192
+              max_document_bytes: 102400
+              max_instruction_bytes: 1024
+              max_doc_id_length: 255
+              max_metadata_keys: 64
+              max_metadata_bytes: 8192
+              max_top_k: 100
+              max_candidate_k: 500
+              max_attention_values_per_request: 1048576
+              max_chunks_per_upsert: 128
+              max_page_size: 100
+            created_at: '2026-11-20T00:00:00Z'
+        has_more: false
+        next_cursor: null
+    EncodeResponseExample:
+      summary: A query with routing slots, mean attention and tokens (tensor data abbreviated)
+      x-abbreviated: true
+      value:
+        model:
+          id: breadbowl-embed-v1.3
+          revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+        input_type: query
+        instruction: Retrieve relevant documents.
+        data:
+          - index: 0
+            token_count: 9
+            truncated: false
+            routing:
+              encoding: base64
+              dtype: float16
+              shape: [16, 256]
+              axes: [slot, dim]
+              byte_order: little
+              data: ADwAPAA8ADwAPAA8
+            attention:
+              encoding: base64
+              dtype: float16
+              shape: [1, 16, 9]
+              axes: [head, slot, token]
+              byte_order: little
+              data: AAAAAGYuZi4zMw==
+            tokens:
+              - {id: 87655, text: Retrieve, segment: template, start: null, end: null}
+              - {id: 9760, text: ' relevant', segment: template, start: null, end: null}
+              - {id: 9293, text: ' documents', segment: template, start: null, end: null}
+              - {id: 13, text: ., segment: template, start: null, end: null}
+              - {id: 198, text: "\n", segment: template, start: null, end: null}
+              - {id: 2859, text: Query, segment: template, start: null, end: null}
+              - {id: 25, text: ':', segment: template, start: null, end: null}
+              - {id: 16919, text: ' rotate', segment: input, start: 0, end: 6}
+              - {id: 1376, text: ' key', segment: input, start: 6, end: 10}
+        usage:
+          input_tokens: 9
+          document_count: 0
+          chunk_count: 0
+          candidate_count: 0
+          latency_ms: 31
+    ScoreResponseExample:
+      summary: Two documents ranked
+      value:
+        model:
+          id: breadbowl-embed-v1.3
+          revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+        scoring:
+          routing_aggregation: logmeanexp
+          tau_k: 0.02
+          tau_v: 0.1
+          routing_weight: 0.75
+          value_weight: 0.25
+        query:
+          token_count: 10
+          truncated: false
+        results:
+          - index: 0
+            doc_id: a
+            score: 0.6125
+            routing_score: 0.66
+            value_score: 0.47
+            metadata:
+              source: help-center
+            document:
+              token_count: 9
+              truncated: false
+          - index: 1
+            doc_id: b
+            score: 0.3175
+            routing_score: 0.35
+            value_score: 0.22
+            metadata: {}
+            document:
+              token_count: 9
+              truncated: false
+        usage:
+          input_tokens: 28
+          document_count: 2
+          chunk_count: 0
+          candidate_count: 2
+          latency_ms: 48
+    ScoreResponseExplainedExample:
+      summary: One document with explanation and attention (tensor data abbreviated)
+      x-abbreviated: true
+      value:
+        model:
+          id: breadbowl-embed-v1.3
+          revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+        scoring:
+          routing_aggregation: logmeanexp
+          tau_k: 0.02
+          tau_v: 0.1
+          routing_weight: 0.75
+          value_weight: 0.25
+        query:
+          token_count: 9
+          truncated: false
+          tokens:
+            - {id: 87655, text: Retrieve, segment: template, start: null, end: null}
+            - {id: 9760, text: ' relevant', segment: template, start: null, end: null}
+            - {id: 9293, text: ' documents', segment: template, start: null, end: null}
+            - {id: 13, text: ., segment: template, start: null, end: null}
+            - {id: 198, text: "\n", segment: template, start: null, end: null}
+            - {id: 2859, text: Query, segment: template, start: null, end: null}
+            - {id: 25, text: ':', segment: template, start: null, end: null}
+            - {id: 20965, text: ' refund', segment: input, start: 0, end: 6}
+            - {id: 4842, text: ' policy', segment: input, start: 6, end: 13}
+          attention:
+            encoding: base64
+            dtype: float16
+            shape: [1, 16, 9]
+            axes: [head, slot, token]
+            byte_order: little
+            data: ADgANAAw
+        results:
+          - index: 0
+            doc_id: a
+            score: 0.6125
+            routing_score: 0.66
+            value_score: 0.47
+            metadata: {}
+            document:
+              token_count: 4
+              truncated: false
+              tokens:
+                - {id: 3945, text: Ref, segment: input, start: 0, end: 3}
+                - {id: 42204, text: unds, segment: input, start: 3, end: 7}
+                - {id: 11495, text: ' accepted', segment: input, start: 7, end: 16}
+                - {id: 13, text: ., segment: input, start: 16, end: 17}
+              attention:
+                encoding: base64
+                dtype: float16
+                shape: [1, 16, 4]
+                axes: [head, slot, token]
+                byte_order: little
+                data: ADgAOA==
+            explanation:
+              slot_similarity:
+                encoding: base64
+                dtype: float32
+                shape: [16, 16]
+                axes: [query_slot, document_slot]
+                byte_order: little
+                data: mjmaOZo5
+              routing_contribution:
+                encoding: float
+                dtype: float32
+                shape: [16]
+                axes: [query_slot]
+                data: [0.71, 0.69, 0.66, 0.64, 0.7, 0.62, 0.68, 0.65, 0.63, 0.67, 0.66, 0.64, 0.69, 0.61, 0.67, 0.64]
+              value_attention:
+                encoding: base64
+                dtype: float32
+                shape: [16, 16]
+                axes: [query_slot, document_slot]
+                byte_order: little
+                data: ACwALAAs
+              value_slot_cosine:
+                encoding: float
+                dtype: float32
+                shape: [16]
+                axes: [query_slot]
+                data: [0.52, 0.44, 0.49, 0.41, 0.5, 0.47, 0.46, 0.45, 0.48, 0.43, 0.51, 0.47, 0.46, 0.49, 0.46, 0.48]
+        usage:
+          input_tokens: 13
+          document_count: 1
+          chunk_count: 0
+          candidate_count: 1
+          latency_ms: 39
+    IndexExample:
+      summary: A ready index
+      value:
+        id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+        name: production
+        model:
+          id: breadbowl-embed-v1.3
+          revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+        representation:
+          id: sha256:9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c
+          compute_dtype: bfloat16
+          slot_schema_version: 1
+          stored_dtype: float16
+          routing_normalization: l2
+          value_normalization: none
+        search_profile:
+          name: default
+          description: "Model pipeline: 512 slot hits per query slot, 1,024-chunk routing shortlist, 100 chunks fully scored."
+          candidate_generation: routing_slot_hits
+          slot_hits: 512
+          shortlist: 1024
+          default_candidate_k: 100
+          max_candidate_k: 500
+          scoring:
+            routing_aggregation: logmeanexp
+            tau_k: 0.02
+            tau_v: 0.1
+            routing_weight: 0.75
+            value_weight: 0.25
+          tie_policy: score_desc_doc_id_asc_chunk_index_asc
+          filter_operations: [eq]
+        text_retention: none
+        chunking:
+          strategy: token_window
+          max_tokens: 384
+          overlap_tokens: 64
+          minimum_chunk_tokens: 32
+        metadata_schema: {}
+        status: ready
+        document_count: 1204
+        chunk_count: 3311
+        created_at: '2026-11-21T09:30:00Z'
+    IndexListExample:
+      summary: One page of indexes
+      value:
+        data:
+          - id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+            name: production
+            model:
+              id: breadbowl-embed-v1.3
+              revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+            representation:
+              id: sha256:9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c
+              compute_dtype: bfloat16
+              slot_schema_version: 1
+              stored_dtype: float16
+              routing_normalization: l2
+              value_normalization: none
+            search_profile:
+              name: default
+              description: "Model pipeline: 512 slot hits per query slot, 1,024-chunk routing shortlist, 100 chunks fully scored."
+              candidate_generation: routing_slot_hits
+              slot_hits: 512
+              shortlist: 1024
+              default_candidate_k: 100
+              max_candidate_k: 500
+              scoring:
+                routing_aggregation: logmeanexp
+                tau_k: 0.02
+                tau_v: 0.1
+                routing_weight: 0.75
+                value_weight: 0.25
+              tie_policy: score_desc_doc_id_asc_chunk_index_asc
+              filter_operations: [eq]
+            text_retention: none
+            chunking:
+              strategy: token_window
+              max_tokens: 384
+              overlap_tokens: 64
+              minimum_chunk_tokens: 32
+            metadata_schema: {}
+            status: ready
+            document_count: 1204
+            chunk_count: 3311
+            created_at: '2026-11-21T09:30:00Z'
+        has_more: true
+        next_cursor: eyJjIjoiMjAyNi0xMS0yMVQwOTozMDowMFoiLCJpIjoiMGI4YTNkMGUifQ
+    UpsertDocumentsResponseExample:
+      summary: One document stored, one failed
+      value:
+        index_id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+        documents:
+          - doc_id: doc-1
+            status: upserted
+            content_sha256: 4f2a8c6e0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d2f4a
+            token_count: 17
+            chunk_count: 1
+            truncated: false
+          - doc_id: doc-2
+            status: failed
+            error:
+              code: encoding_failed
+              message: Model worker failed while encoding this document
+              retryable: true
+        upserted_documents: 1
+        upserted_chunks: 1
+        failed_documents: 1
+        usage:
+          input_tokens: 17
+          document_count: 1
+          chunk_count: 1
+          candidate_count: 0
+          latency_ms: 212
+    StoredDocumentExample:
+      summary: A stored document without vectors
+      value:
+        index_id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+        doc_id: doc-1
+        status: ready
+        error: null
+        content_sha256: 4f2a8c6e0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d2f4a
+        metadata:
+          source: docs
+          year: 2026
+        token_count: 17
+        chunk_count: 1
+        chunks:
+          - chunk_id: doc-1:0
+            chunk_index: 0
+            token_start: 0
+            token_end: 17
+            token_count: 17
+            char_start: 0
+            char_end: 69
+        created_at: '2026-11-21T09:31:12Z'
+        updated_at: '2026-11-21T09:31:12Z'
+    SearchResponseExample:
+      summary: Two hits
+      value:
+        index_id: 0b8a3d0e-5c1f-4f7e-9a51-3e2d6c4b1a90
+        model:
+          id: breadbowl-embed-v1.3
+          revision: 6f1d2c9a4b7e8f0123456789abcdef0123456789
+        search_profile:
+          name: default
+          description: "Model pipeline: 512 slot hits per query slot, 1,024-chunk routing shortlist, 100 chunks fully scored."
+          candidate_generation: routing_slot_hits
+          slot_hits: 512
+          shortlist: 1024
+          default_candidate_k: 100
+          max_candidate_k: 500
+          scoring:
+            routing_aggregation: logmeanexp
+            tau_k: 0.02
+            tau_v: 0.1
+            routing_weight: 0.75
+            value_weight: 0.25
+          tie_policy: score_desc_doc_id_asc_chunk_index_asc
+          filter_operations: [eq]
+        scoring:
+          routing_aggregation: logmeanexp
+          tau_k: 0.02
+          tau_v: 0.1
+          routing_weight: 0.75
+          value_weight: 0.25
+        top_k: 10
+        candidate_k: 100
+        query:
+          token_count: 15
+          truncated: false
+        results:
+          - doc_id: doc-1
+            chunk_id: doc-1:0
+            chunk_index: 0
+            token_start: 0
+            token_end: 17
+            char_start: 0
+            char_end: 69
+            score: 0.7012
+            routing_score: 0.74
+            value_score: 0.5848
+            metadata:
+              source: docs
+              year: 2026
+          - doc_id: doc-7
+            chunk_id: doc-7:2
+            chunk_index: 2
+            token_start: 640
+            token_end: 1024
+            char_start: 2911
+            char_end: 4630
+            score: 0.5521
+            routing_score: 0.6
+            value_score: 0.4084
+            metadata:
+              source: docs
+              year: 2025
+        usage:
+          input_tokens: 15
+          document_count: 0
+          chunk_count: 2
+          candidate_count: 1024
+          latency_ms: 86
+    UsageSummaryExample:
+      summary: Mid-month usage
+      value:
+        period_start: '2026-11-01T00:00:00Z'
+        period_end: '2026-12-01T00:00:00Z'
+        usage:
+          input_tokens: '1834221'
+          requests: '5120'
+          encodes: '310'
+          scores: '1022'
+          searches: '3601'
+          document_upserts: '187'
+          documents: 1204
+        limits:
+          input_tokens: '50000000'
+          documents: 100000
+          requests_per_minute: 60
+          max_concurrent_requests: 2
+        remaining:
+          input_tokens: '48165779'
+          documents: 98796
+        api_key:
+          id: 2d9e4c1a-7b3f-4e8d-a6c5-0f1b2c3d4e5f
+          name: production-backend
+          key_prefix: bb_live_Xk3mP9aQrT
+          scopes: [score, 'indexes:read']
+          expires_at: '2027-05-01T00:00:00Z'
+          rate_limit:
+            requests_per_minute: 30
+            max_concurrent_requests: null
