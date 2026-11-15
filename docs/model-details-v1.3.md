@@ -287,7 +287,6 @@ This panel chose the checkpoint and its sources overlap the training data; it is
 
 Measured on the MS MARCO evaluation's stored passage vectors, through the evaluator's own search and scoring code. With float32 vectors the measurement reproduced the evaluation exactly (same top documents for all 7,077 queries; largest score difference 5.96e-08).
 
-<!-- TODO before publishing: float16, int4 and IVF-PQ result files exist in the final evaluation run (2026-11-14). Fill these rows and the "Not yet measured" lines from them, or keep as is. -->
 
 | Stored passage vectors | Bytes per passage | MS MARCO dev QK / QKV / R@100 | DL19 QK / QKV / R@100 | DL20 QK / QKV / R@100 |
 | --- | ---: | --- | --- | --- |
