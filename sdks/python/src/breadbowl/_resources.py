@@ -86,7 +86,7 @@ def _document(value: Any, position: int, *, allow_str: bool) -> Dict[str, Any]:
     )
 
 
-def _model_parser(cls: Type[M]) -> Callable[[Any, ResponseMeta], M]:
+def _model_parser[M: BaseModel](cls: Type[M]) -> Callable[[Any, ResponseMeta], M]:
     return lambda data, meta: cls.from_dict(data)._with_meta(meta)
 
 

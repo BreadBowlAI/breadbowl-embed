@@ -10,7 +10,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Generic, Mapping, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple, TypeVar, Union
 from urllib.parse import quote
 
 import httpx
@@ -53,7 +53,7 @@ T = TypeVar("T")
 
 
 @dataclass
-class Call(Generic[T]):
+class Call[T]:
     """One API call: which operation, its parameters and how to parse a 2xx body."""
 
     operation_id: str

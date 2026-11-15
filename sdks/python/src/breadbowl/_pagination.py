@@ -8,7 +8,6 @@ from typing import (
     Awaitable,
     Callable,
     Generator,
-    Generic,
     Iterator,
     List,
     Optional,
@@ -24,14 +23,14 @@ __all__ = ["SyncPage", "AsyncPage", "AsyncPaginator"]
 T = TypeVar("T", bound=BaseModel)
 
 
-def parse_page_data(item_cls: Type[T], data: Any) -> tuple[List[T], bool, Optional[str]]:
+def parse_page_data[T: BaseModel](item_cls: Type[T], data: Any) -> tuple[List[T], bool, Optional[str]]:
     items = [item_cls.from_dict(x) for x in data.get("data") or []]
     has_more = bool(data.get("has_more"))
     next_cursor = data.get("next_cursor")
     return items, has_more, next_cursor if isinstance(next_cursor, str) else None
 
 
-class _PageBase(Generic[T]):
+class _PageBase[T: BaseModel]:
     def __init__(
         self,
         data: List[T],
@@ -137,7 +136,7 @@ class AsyncPage(_PageBase[T]):
                 yield item
 
 
-class AsyncPaginator(Generic[T]):
+class AsyncPaginator[T: BaseModel]:
     """What async ``list()`` returns: ``await`` it for the first page, or ``async for`` over
     it for every item across pages."""
 
