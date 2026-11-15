@@ -1,17 +1,26 @@
 // documents.upsertBatched and the upsert timeout, against a simulated server that chunks
 // documents (metadata.chunks chunks each) and enforces a chunk limit per request.
 import { describe, expect, it } from 'vitest';
-import { BatchUpsertError, BreadBowl, RepresentationUnavailableError, type DocumentInput, type FetchLike } from '../src/index.js';
+import {
+  BatchUpsertError,
+  BreadBowl,
+  IndexChunkLimitExceededError,
+  RepresentationUnavailableError,
+  type DocumentInput,
+  type FetchLike,
+} from '../src/index.js';
 
 const INDEX_ID = 'idx-1';
 
 class ChunkingServer {
   readonly batches: string[][] = [];
   readonly keys: (string | null)[] = [];
+  stored = 0;
   constructor(
     readonly limit = 6,
     readonly failDoc: string | null = null,
     readonly breakAfter: number | null = null,
+    readonly indexLimit: number | null = null,
   ) {}
 
   readonly fetch: FetchLike = (_url, init) => {
@@ -28,6 +37,11 @@ class ChunkingServer {
     if (requested > this.limit) {
       return json(422, { error: { code: 'chunk_limit_exceeded', message: 'too many', details: { limit: this.limit, requested } } }, 'r-422');
     }
+    if (this.indexLimit !== null && this.stored + requested > this.indexLimit) {
+      const details = { limit: this.indexLimit, current: this.stored, requested, replaced: 0 };
+      return json(422, { error: { code: 'index_chunk_limit_exceeded', message: 'index full', details } }, 'r-422');
+    }
+    this.stored += requested;
     const outcomes = [...docs].reverse().map((d) =>
       d.doc_id === this.failDoc
         ? { doc_id: d.doc_id, status: 'failed', error: { code: 'encoding_failed', message: 'worker', retryable: true } }
@@ -104,6 +118,18 @@ describe('upsertBatched', () => {
     expect(b.result.documents.map((d) => d.doc_id)).toEqual(['d0', 'd1', 'd2']);
     expect(b.pending).toEqual(['d3', 'd4', 'd5', 'd6']);
     expect(server.batches).toHaveLength(2); // not retried
+  });
+
+  it('stops on index_chunk_limit_exceeded without splitting or retrying the batch', async () => {
+    const server = new ChunkingServer(1000, null, null, 5);
+    const err = await client(server).indexes.documents.upsertBatched(INDEX_ID, docs(7), { batchSize: 3 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BatchUpsertError);
+    const b = err as BatchUpsertError;
+    expect(b.error).toBeInstanceOf(IndexChunkLimitExceededError);
+    expect((b.error as IndexChunkLimitExceededError).current).toBe(3);
+    expect(b.result.documents.map((d) => d.doc_id)).toEqual(['d0', 'd1', 'd2']);
+    expect(b.pending).toEqual(['d3', 'd4', 'd5', 'd6']);
+    expect(server.batches).toHaveLength(2);
   });
 
   it('rejects duplicate doc_ids and bad batch sizes before sending', async () => {

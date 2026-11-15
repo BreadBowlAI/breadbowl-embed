@@ -32,6 +32,7 @@ const EXPECTED: Record<string, string> = {
   attention_limit_exceeded: 'AttentionLimitExceededError',
   document_limit_exceeded: 'DocumentLimitExceededError',
   chunk_limit_exceeded: 'ChunkLimitExceededError',
+  index_chunk_limit_exceeded: 'IndexChunkLimitExceededError',
   idempotency_key_reused: 'IdempotencyKeyReusedError',
   rate_limit_exceeded: 'RateLimitExceededError',
   concurrency_limit_exceeded: 'ConcurrencyLimitExceededError',
@@ -88,6 +89,16 @@ describe('fallbacks', () => {
     expect(e.requiredScope).toBe('indexes:write');
     const c = new sdk.IndexNameConflictError('x', { status: 409, code: 'index_name_conflict', requestId: null, details: { index_id: 'i' } });
     expect(c.indexId).toBe('i');
+    const full = new sdk.IndexChunkLimitExceededError('x', {
+      status: 422,
+      code: 'index_chunk_limit_exceeded',
+      requestId: null,
+      details: { limit: 100000, current: 99990, requested: 46, replaced: 6 },
+    });
+    expect([full.limit, full.current, full.requested, full.replaced]).toEqual([100000, 99990, 46, 6]);
+    expect(full.detailsFor('index_chunk_limit_exceeded')).toEqual({ limit: 100000, current: 99990, requested: 46, replaced: 6 });
+    expect(full).toBeInstanceOf(sdk.UnprocessableEntityError);
+    expect(full).not.toBeInstanceOf(sdk.ChunkLimitExceededError);
   });
 
   it('non-JSON error bodies', async () => {

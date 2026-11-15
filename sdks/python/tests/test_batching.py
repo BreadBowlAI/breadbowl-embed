@@ -14,6 +14,7 @@ from breadbowl import (
     BatchUpsertError,
     BreadBowl,
     Document,
+    IndexChunkLimitExceededError,
     RepresentationUnavailableError,
     UpsertBatchResult,
 )
@@ -23,11 +24,17 @@ INDEX_ID = "idx-1"
 
 class ChunkingServer:
     def __init__(
-        self, limit: int = 6, fail_doc: Optional[str] = None, break_after: Optional[int] = None
+        self,
+        limit: int = 6,
+        fail_doc: Optional[str] = None,
+        break_after: Optional[int] = None,
+        index_limit: Optional[int] = None,
     ) -> None:
         self.limit = limit
         self.fail_doc = fail_doc
         self.break_after = break_after
+        self.index_limit = index_limit
+        self.stored = 0
         self.batches: List[List[str]] = []
         self.keys: List[str] = []
         self.timeouts: List[Any] = []
@@ -58,6 +65,17 @@ class ChunkingServer:
                 }
             }
             return httpx.Response(422, json=body, headers={"x-request-id": "r-422"})
+        if self.index_limit is not None and self.stored + requested > self.index_limit:
+            details = {"limit": self.index_limit, "current": self.stored, "requested": requested}
+            body = {
+                "error": {
+                    "code": "index_chunk_limit_exceeded",
+                    "message": "index full",
+                    "details": {**details, "replaced": 0},
+                }
+            }
+            return httpx.Response(422, json=body, headers={"x-request-id": "r-422"})
+        self.stored += requested
         outcomes: List[Dict[str, Any]] = []
         for d in reversed(docs):  # any order: the helper matches outcomes by doc_id
             if d["doc_id"] == self.fail_doc:
@@ -170,6 +188,17 @@ def test_a_request_failure_stops_with_partial_results() -> None:
     assert [d.doc_id for d in err.result.documents] == ["d0", "d1", "d2"]
     assert err.pending == ["d3", "d4", "d5", "d6"]
     assert len(server.batches) == 2  # 409 representation_unavailable is not retried
+
+
+def test_index_chunk_limit_stops_without_splitting_or_retrying() -> None:
+    server = ChunkingServer(limit=1000, index_limit=5)
+    with pytest.raises(BatchUpsertError) as info:
+        client_for(server).indexes.documents.upsert_batched(INDEX_ID, docs(7), batch_size=3)
+    err = info.value
+    assert isinstance(err.error, IndexChunkLimitExceededError) and err.error.current == 3
+    assert [d.doc_id for d in err.result.documents] == ["d0", "d1", "d2"]
+    assert err.pending == ["d3", "d4", "d5", "d6"]
+    assert len(server.batches) == 2
 
 
 def test_invalid_input_is_rejected_before_any_request() -> None:

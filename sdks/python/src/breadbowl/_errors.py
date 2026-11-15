@@ -41,6 +41,7 @@ __all__ = [
     "AttentionLimitExceededError",
     "DocumentLimitExceededError",
     "ChunkLimitExceededError",
+    "IndexChunkLimitExceededError",
     "IdempotencyKeyReusedError",
     "RateLimitError",
     "RateLimitExceededError",
@@ -301,6 +302,28 @@ class ChunkLimitExceededError(UnprocessableEntityError):
         return self._detail("requested", int)
 
 
+class IndexChunkLimitExceededError(UnprocessableEntityError):
+    """After the upsert the index would hold more than ``limits.max_chunks_per_index`` chunks:
+    ``current + requested - replaced > limit``. Splitting the request does not help; delete
+    documents or use another index. ``documents.upsert_batched`` does not retry it."""
+
+    @property
+    def limit(self) -> Optional[int]:
+        return self._detail("limit", int)
+
+    @property
+    def current(self) -> Optional[int]:
+        return self._detail("current", int)
+
+    @property
+    def requested(self) -> Optional[int]:
+        return self._detail("requested", int)
+
+    @property
+    def replaced(self) -> Optional[int]:
+        return self._detail("replaced", int)
+
+
 class IdempotencyKeyReusedError(UnprocessableEntityError):
     pass
 
@@ -353,6 +376,7 @@ _BY_CODE: Dict[str, Type[APIStatusError]] = {
     "attention_limit_exceeded": AttentionLimitExceededError,
     "document_limit_exceeded": DocumentLimitExceededError,
     "chunk_limit_exceeded": ChunkLimitExceededError,
+    "index_chunk_limit_exceeded": IndexChunkLimitExceededError,
     "idempotency_key_reused": IdempotencyKeyReusedError,
     "rate_limit_exceeded": RateLimitExceededError,
     "concurrency_limit_exceeded": ConcurrencyLimitExceededError,

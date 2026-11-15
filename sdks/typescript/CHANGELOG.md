@@ -52,6 +52,10 @@ OpenAPI `info.version` 1.3.0). 0.1.0 targets the v1.3 API only.
 - `RepresentationUnavailableError` (409, never retried) and `ChunkLimitExceededError` (422), with
   typed details. `Representation.compute_dtype` and `ServiceLimits.max_chunks_per_upsert` come
   from the generated types.
+- `IndexChunkLimitExceededError` (422 `index_chunk_limit_exceeded`, an index would hold more than
+  `limits.max_chunks_per_index` chunks) with `limit`, `current`, `requested` and `replaced`;
+  `upsertBatched` does not split or retry it. `ServiceLimits.max_chunks_per_index` (`null`: no
+  limit) comes from the generated types.
 - Spans follow the contract's token rule: offsets of tokens that split a character overlap, so
   `tokenSpans`, `querySpans()` and `documentSpans()` merge overlapping offsets (union range,
   summed weight, all positions). The spans never overlap and tile the text. `tokenSpans` returns

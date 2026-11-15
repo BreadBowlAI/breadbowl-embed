@@ -36,6 +36,7 @@ EXPECTED = {
     "attention_limit_exceeded": "AttentionLimitExceededError",
     "document_limit_exceeded": "DocumentLimitExceededError",
     "chunk_limit_exceeded": "ChunkLimitExceededError",
+    "index_chunk_limit_exceeded": "IndexChunkLimitExceededError",
     "idempotency_key_reused": "IdempotencyKeyReusedError",
     "rate_limit_exceeded": "RateLimitExceededError",
     "concurrency_limit_exceeded": "ConcurrencyLimitExceededError",
@@ -97,6 +98,14 @@ def test_typed_details() -> None:
         "x", status_code=409, code="index_name_conflict", request_id=None, details={"index_id": "idx"}
     )
     assert conflict.index_id == "idx"  # type: ignore[attr-defined]
+    details = {"limit": 100000, "current": 99990, "requested": 46, "replaced": 6}
+    full = breadbowl.IndexChunkLimitExceededError(
+        "x", status_code=422, code="index_chunk_limit_exceeded", request_id=None, details=details
+    )
+    assert (full.limit, full.current, full.requested, full.replaced) == (100000, 99990, 46, 6)
+    assert full.details_for("index_chunk_limit_exceeded") == details
+    assert isinstance(full, UnprocessableEntityError)
+    assert not isinstance(full, breadbowl.ChunkLimitExceededError)
 
 
 def test_non_json_error_body(api: MockAPI) -> None:

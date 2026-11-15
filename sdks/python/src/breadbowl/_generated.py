@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Tuple, TypedDict, Union
 
 SPEC_VERSION = '1.3.0'
-SPEC_SHA256 = '5dca301d6ef79ab69d75f2b2208e0f68ea49a45c99c5142c20e48451868b44d7'
+SPEC_SHA256 = '61a2b84dfe8cb3dff44018e2fde749c4c8b300a7e0919e6267e04845be3646df'
 SPEC_LICENSE = 'Apache-2.0'
 DEFAULT_BASE_URL = 'https://embed.breadbowl.ai'
 
@@ -222,6 +222,14 @@ class ChunkLimitDetails(_ChunkLimitDetailsRequired, _ChunkLimitDetailsOptional):
     """The contract's ``ChunkLimitDetails`` schema."""
 
 
+_IndexChunkLimitDetailsRequired = TypedDict('_IndexChunkLimitDetailsRequired', {'limit': int, 'current': int, 'requested': int, 'replaced': int})
+_IndexChunkLimitDetailsOptional = TypedDict('_IndexChunkLimitDetailsOptional', {}, total=False)
+
+
+class IndexChunkLimitDetails(_IndexChunkLimitDetailsRequired, _IndexChunkLimitDetailsOptional):
+    """The index would hold `current + requested − replaced` chunks after the request, more than `limit`."""
+
+
 # ------------------------------------------------------------------ operations
 class Operation(NamedTuple):
     method: str
@@ -243,7 +251,7 @@ OPERATIONS: Dict[str, Operation] = {
     'createIndex': Operation('POST', '/v1/indexes', authenticated=True, scopes=('indexes:write',), idempotency_key=True, error_codes={'400': ('bad_request',), '401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '409': ('index_name_conflict', 'idempotency_request_in_progress'), '413': ('payload_too_large',), '415': ('unsupported_media_type',), '422': ('validation_error', 'unsupported_model', 'unsupported_search_profile', 'idempotency_key_reused'), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
     'getIndex': Operation('GET', '/v1/indexes/{index_id}', authenticated=True, scopes=('indexes:read',), idempotency_key=False, error_codes={'401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '404': ('not_found',), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
     'deleteIndex': Operation('DELETE', '/v1/indexes/{index_id}', authenticated=True, scopes=('indexes:write',), idempotency_key=True, error_codes={'401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '404': ('not_found',), '409': ('idempotency_request_in_progress',), '422': ('validation_error', 'idempotency_key_reused'), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
-    'upsertDocuments': Operation('POST', '/v1/indexes/{index_id}/documents', authenticated=True, scopes=('indexes:write',), idempotency_key=True, error_codes={'400': ('bad_request',), '401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '404': ('not_found',), '409': ('index_not_ready', 'model_revision_unavailable', 'representation_unavailable', 'idempotency_request_in_progress'), '413': ('payload_too_large',), '415': ('unsupported_media_type',), '422': ('validation_error', 'document_limit_exceeded', 'chunk_limit_exceeded', 'idempotency_key_reused'), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded', 'usage_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
+    'upsertDocuments': Operation('POST', '/v1/indexes/{index_id}/documents', authenticated=True, scopes=('indexes:write',), idempotency_key=True, error_codes={'400': ('bad_request',), '401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '404': ('not_found',), '409': ('index_not_ready', 'model_revision_unavailable', 'representation_unavailable', 'idempotency_request_in_progress'), '413': ('payload_too_large',), '415': ('unsupported_media_type',), '422': ('validation_error', 'document_limit_exceeded', 'chunk_limit_exceeded', 'index_chunk_limit_exceeded', 'idempotency_key_reused'), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded', 'usage_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
     'getDocument': Operation('GET', '/v1/indexes/{index_id}/documents/{doc_id}', authenticated=True, scopes=('indexes:read',), idempotency_key=False, error_codes={'401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '404': ('not_found',), '422': ('validation_error',), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
     'deleteDocument': Operation('DELETE', '/v1/indexes/{index_id}/documents/{doc_id}', authenticated=True, scopes=('indexes:write',), idempotency_key=True, error_codes={'401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '404': ('not_found',), '409': ('idempotency_request_in_progress',), '422': ('validation_error', 'idempotency_key_reused'), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
     'searchIndex': Operation('POST', '/v1/indexes/{index_id}/search', authenticated=True, scopes=('indexes:read',), idempotency_key=False, error_codes={'400': ('bad_request',), '401': ('authentication_failed', 'api_key_expired'), '403': ('tenant_suspended', 'insufficient_scope'), '404': ('not_found',), '409': ('index_not_ready', 'model_revision_unavailable', 'representation_unavailable'), '413': ('payload_too_large',), '415': ('unsupported_media_type',), '422': ('validation_error', 'unsupported_filter', 'attention_limit_exceeded'), '429': ('rate_limit_exceeded', 'concurrency_limit_exceeded', 'usage_limit_exceeded'), '500': ('internal_error',), '503': ('service_unavailable',)}),
@@ -259,7 +267,7 @@ ERROR_CODES: Dict[int, Tuple[str, ...]] = {
     409: ('index_name_conflict', 'idempotency_request_in_progress', 'index_not_ready', 'model_revision_unavailable', 'representation_unavailable'),
     413: ('payload_too_large',),
     415: ('unsupported_media_type',),
-    422: ('validation_error', 'invalid_cursor', 'unsupported_model', 'attention_limit_exceeded', 'unsupported_search_profile', 'idempotency_key_reused', 'document_limit_exceeded', 'chunk_limit_exceeded', 'unsupported_filter'),
+    422: ('validation_error', 'invalid_cursor', 'unsupported_model', 'attention_limit_exceeded', 'unsupported_search_profile', 'idempotency_key_reused', 'document_limit_exceeded', 'chunk_limit_exceeded', 'index_chunk_limit_exceeded', 'unsupported_filter'),
     429: ('rate_limit_exceeded', 'concurrency_limit_exceeded', 'usage_limit_exceeded'),
     500: ('internal_error',),
     503: ('service_unavailable',),
@@ -278,4 +286,5 @@ ERROR_DETAILS: Dict[str, Any] = {
     'document_limit_exceeded': DocumentLimitDetails,
     'representation_unavailable': RepresentationUnavailableDetails,
     'chunk_limit_exceeded': ChunkLimitDetails,
+    'index_chunk_limit_exceeded': IndexChunkLimitDetails,
 }

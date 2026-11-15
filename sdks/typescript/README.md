@@ -130,6 +130,10 @@ One request takes at most 50 documents and `limits.max_chunks_per_upsert` (128) 
   retried, because chunk counts are only known after the server tokenizes.
 - A single document over the limit becomes a failed outcome with code `chunk_limit_exceeded`.
 - The outcomes come back merged, in input order.
+- An index holds at most `limits.max_chunks_per_index` (100,000) chunks. A batch that would take
+  it past that fails with `IndexChunkLimitExceededError`, which is not split or retried: it ends
+  `upsertBatched` with a `BatchUpsertError`. A document refused because a concurrent upsert
+  filled the index is a failed outcome with code `index_chunk_limit_exceeded`.
 
 ```ts
 import { BatchUpsertError } from '@breadbowl/embed';
@@ -250,7 +254,7 @@ Non-2xx responses throw `APIStatusError` subclasses. Each one carries `status`, 
 - 409 `ConflictError` (`IndexNameConflictError`, `IndexNotReadyError`, `ModelRevisionUnavailableError`, `RepresentationUnavailableError`, `IdempotencyRequestInProgressError`)
 - 413 `PayloadTooLargeError`
 - 415 `UnsupportedMediaTypeError`
-- 422 `UnprocessableEntityError` (`RequestValidationError`, `InvalidCursorError`, `UnsupportedModelError`, `UnsupportedSearchProfileError`, `UnsupportedFilterError`, `AttentionLimitExceededError`, `DocumentLimitExceededError`, `ChunkLimitExceededError`, `IdempotencyKeyReusedError`)
+- 422 `UnprocessableEntityError` (`RequestValidationError`, `InvalidCursorError`, `UnsupportedModelError`, `UnsupportedSearchProfileError`, `UnsupportedFilterError`, `AttentionLimitExceededError`, `DocumentLimitExceededError`, `ChunkLimitExceededError`, `IndexChunkLimitExceededError`, `IdempotencyKeyReusedError`)
 - 429 `RateLimitError` (`RateLimitExceededError`, `ConcurrencyLimitExceededError`, `UsageLimitExceededError`)
 - 503 `ServiceUnavailableError`
 - other 5xx `InternalServerError`
@@ -271,6 +275,7 @@ An unknown `code` maps to its status class. Failures without a response throw
   - `AttentionLimitExceededError.requestedValues` and `.limit`
   - `DocumentLimitExceededError.limit`, `.current` and `.newDocuments`
   - `ChunkLimitExceededError.limit` and `.requested`
+  - `IndexChunkLimitExceededError.limit`, `.current`, `.requested` and `.replaced`
   - `RepresentationUnavailableError.representation` and `.served`
 
 `RepresentationUnavailableError` means the pinned model revision is served with another

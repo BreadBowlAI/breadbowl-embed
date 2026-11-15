@@ -196,6 +196,25 @@ export class ChunkLimitExceededError extends UnprocessableEntityError {
     return num(this.details.requested);
   }
 }
+/**
+ * After the upsert the index would hold more than `limits.max_chunks_per_index` chunks:
+ * `current + requested - replaced > limit`. Splitting the request does not help; delete documents
+ * or use another index. `upsertBatched` does not retry it.
+ */
+export class IndexChunkLimitExceededError extends UnprocessableEntityError {
+  get limit(): number | null {
+    return num(this.details.limit);
+  }
+  get current(): number | null {
+    return num(this.details.current);
+  }
+  get requested(): number | null {
+    return num(this.details.requested);
+  }
+  get replaced(): number | null {
+    return num(this.details.replaced);
+  }
+}
 export class IdempotencyKeyReusedError extends UnprocessableEntityError {}
 export class RateLimitError extends APIStatusError {}
 export class RateLimitExceededError extends RateLimitError {}
@@ -230,6 +249,7 @@ const BY_CODE: Record<string, StatusErrorClass> = {
   attention_limit_exceeded: AttentionLimitExceededError,
   document_limit_exceeded: DocumentLimitExceededError,
   chunk_limit_exceeded: ChunkLimitExceededError,
+  index_chunk_limit_exceeded: IndexChunkLimitExceededError,
   idempotency_key_reused: IdempotencyKeyReusedError,
   rate_limit_exceeded: RateLimitExceededError,
   concurrency_limit_exceeded: ConcurrencyLimitExceededError,

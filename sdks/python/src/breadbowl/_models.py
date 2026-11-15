@@ -334,6 +334,8 @@ class ServiceLimits(BaseModel):
     max_candidate_k: int
     max_attention_values_per_request: int
     max_chunks_per_upsert: int
+    max_chunks_per_index: Optional[int]
+    """Chunks one index may hold, counted after replacements; ``None``: no limit."""
     max_page_size: int
 
 
