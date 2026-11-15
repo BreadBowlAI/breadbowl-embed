@@ -26,7 +26,8 @@ jobs:
   # HTTP client SDKs (sdks/). Each one is generated from sdks/openapi/bb-embed.v1.yaml; the
   # --check steps fail when generated code or the shared test fixtures are stale.
   sdk-python:
-    runs-on: ubuntu-latest
+    # Pinned: newer runner images no longer provide Python 3.9.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
