@@ -29,7 +29,7 @@ pip install "breadbowl[numpy] @ git+https://github.com/BreadBowlAI/breadbowl-emb
 
 Once the package is published on PyPI: `pip install breadbowl` (or `"breadbowl[numpy]"`).
 
-Python 3.9 or newer.
+Python 3.12 or newer.
 
 **Version 0.1.0 targets the v1.3 API**
 ([`sdks/openapi/bb-embed.v1.yaml`](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/sdks/openapi/bb-embed.v1.yaml),

@@ -31,7 +31,7 @@ OpenAPI `info.version` 1.3.0). 0.1.0 targets the v1.3 API only.
   and shape and length checks.
 - `token_attribution`, `token_spans` and `attention_matrix`.
 - `ScoreResponse.attribution()` and `SearchResponse.attribution()`.
-- Depends on httpx only. numpy is optional. Python 3.9+.
+- Depends on httpx only. numpy is optional. Python 3.12+.
 - Contract features used by the SDK:
   - `SearchResponse` carries the full `search_profile`, `scoring`, `top_k` and `candidate_k`.
   - Explanation tensors are always float32.

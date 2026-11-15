@@ -9,7 +9,7 @@ description = "Python client for the BreadBowl Embed (bb-embed v1.3) HTTP API: e
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 keywords = ["breadbowl", "bb-embed", "embeddings", "retrieval", "search"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -17,11 +17,10 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Typing :: Typed",
 ]
 dependencies = ["httpx>=0.26,<1"]
@@ -57,14 +56,15 @@ addopts = "-ra"
 
 [tool.ruff]
 line-length = 110
-target-version = "py39"
+target-version = "py312"
 extend-exclude = ["src/breadbowl/_generated.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # typing.List/Optional are kept on purpose: the dataclass field parser evaluates annotations at
-# runtime, and PEP 604/585 spellings do not evaluate on Python 3.9.
-ignore = ["UP006", "UP007", "UP035", "UP045"]
+# runtime, and PEP 604/585 spellings are not handled by it.
+# B905: zip() calls here pair sequences whose lengths are already checked.
+ignore = ["UP006", "UP007", "UP035", "UP045", "B905"]
 
 [tool.mypy]
 strict = true
