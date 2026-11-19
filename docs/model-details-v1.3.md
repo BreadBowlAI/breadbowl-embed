@@ -25,7 +25,7 @@ The two scores, for a query q and a passage d (16 slots each, routing vectors L2
 - **Value score V.** Turn the same 16 × 16 similarities into attention over passage slots (softmax, temperature 0.1). Each query slot gets a weighted sum of the passage's **raw** value vectors. V is the cosine between that readout and the query slot's own value vector, averaged over the 16 query slots.
 - **Final score (QKV)** = 0.75 R + 0.25 V. QK and QKV rank the same candidates; only the ordering changes.
 
-Reranking from cached vectors is not unique to this design: ColBERT-style models also rescore from stored vectors. What is specific here is that the vectors indexed for retrieval also define the attention that reads the stored values, and that each passage costs a fixed number of vectors. A comparison with single-vector and ColBERT-style models under one protocol has not been run yet (see [Limitations](#limitations)).
+Reranking from cached vectors is not unique to this design: ColBERT-style models also rescore from stored vectors. What is specific here is that the vectors indexed for retrieval also define the attention that reads the stored values, and that each passage costs a fixed number of vectors. The [paper](https://huggingface.co/dotproductx/breadbowl-embed-v1.3/blob/main/paper/breadbowl-embed-v1.3.pdf) compares it under one protocol with two single-vector retrievers (Qwen3-Embedding-0.6B, Jina v5 text-small), alone and followed by a cross-encoder, and with a routing-only late-interaction model trained in the same setting. ColBERTv2 and ConstBERT themselves were not run (see [Limitations](#limitations)).
 
 ## Using the library
 
@@ -288,7 +288,7 @@ From the [paper](https://huggingface.co/dotproductx/breadbowl-embed-v1.3/blob/ma
 
 ▲ significantly above v1.3. Against the released systems of similar size (all rows without the 4B cross-encoder, plus the 0.6B cross-encoder on v1.3's own candidates): 15 comparisons, 6 significant wins, 9 level, no loss. On v1.3's own candidates the 0.6B cross-encoder needs 150 ms against v1.3's 2.9 ms (warm file cache; about 11 ms cold).
 
-**Routing-only control.** The same model trained for the routing score alone (same start, data, order, teacher labels, seed and learning rates), storing 16 vectors per passage instead of 32. v1.3 minus control: MS MARCO +0.07 [−0.24, +0.38], DL19 **+1.66** [+0.04, +3.37], DL20 +1.01 [−0.50, +2.58], mean of 14 BEIR tasks **+0.68** [+0.45, +0.91].
+**Routing-only control.** The same model trained for the routing score alone (same start, data, order, teacher labels, seed and learning rates), storing 16 vectors per passage instead of 32. v1.3 minus control: MS MARCO +0.07 [−0.24, +0.38], DL19 **+1.66** [+0.04, +3.37], DL20 +1.01 [−0.50, +2.58], mean of 14 BEIR tasks **+0.68** [+0.45, +0.91]. By the readings fixed before the runs, the BEIR lead (under 1.0 point) is a small lead and MS MARCO shows no gain; the control starts from a checkpoint trained with both scores.
 
 **BEIR**, nDCG@10 × 100, same pipeline settings:
 
@@ -369,17 +369,17 @@ Search over 100,000 synthetic passages (float32 storage, 16 threads, one pre-enc
 
 | Stage | Trained | Data | Teacher |
 | --- | --- | --- | --- |
-| Weak contrastive, 1,000 updates | Backbone, slot extractor, linear routing and value heads | LightOn curated pre-training pairs: 29,939,781 training pairs from 34 subsets (MS MARCO 2.13% of rows); 16.384M pair presentations | — |
+| Weak contrastive, 1,000 updates | Backbone, slot extractor, linear routing and value heads | LightOn curated pre-training pairs from 34 subsets (MS MARCO 2.13% of rows): a preparation target of about 30M pairs (exact accepted counts were not recovered); 16.384M pair presentations | — |
 | Distillation pilot, 1,600 updates | Slot extractor and value modules (residual value MLP added); backbone and routing head frozen | 20,000 queries: 10,000 LightOn, 10,000 PubMedQA-derived | Qwen3-Reranker-0.6B |
 | KL distillation + retrieval replay to step 4000 (= v1.2-preview) | Same restricted modules | 500K-query pool from nine sources; 1.024M KL query presentations, 8.192M replay pair presentations | Qwen3-Reranker-0.6B |
 | Ranking-focused continuation, 128 updates (step 4128) | Same restricted modules; backbone frozen | Same pool; loss 0.1 × KL + 0.9 × 1.2226 × top-order | Qwen3-Reranker-0.6B |
-| **Stage 2c, 1,024 updates (step 5152 = v1.3)** | **Full text backbone** (learning rate 1e-6), routing projection (2.51e-6), slot extractor and value modules | 262,144 KL queries; 493,366 replay queries; nine sources (below) | **Qwen3-Reranker-4B** |
+| **Stage 2c, 1,024 updates (step 5152 = v1.3)** | **Full text backbone** (learning rate 1e-6), routing projection (2.51e-6), slot extractor and value modules | 262,144 KL queries; 493,366 replay query–positive pairs; nine sources (below) | **Qwen3-Reranker-4B** |
 
 Stage 2c loss: 0.1 × KL + 0.9 × 1.2226 × top-order + 0.25 × InfoNCE, 256 queries per update, retrieval replay on every 8th update. Unlike v1.2, the KL and top-order losses also train the routing path. The KL stream excludes the development panel's queries.
 
 Stage 2c data by source:
 
-| Source | KL queries | Replay queries |
+| Source | KL queries | Replay pairs |
 | --- | ---: | ---: |
 | MS MARCO (LightOn fine-tuning collection) | 93,012 | 175,000 |
 | Natural Questions (LightOn) | 34,535 | 65,000 |
