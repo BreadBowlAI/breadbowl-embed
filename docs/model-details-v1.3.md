@@ -8,7 +8,7 @@ BreadBowl-Embed represents every query and passage as **16 routing–value slots
 
 v1.3 continues the line of [v1.2-preview](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview) (the step-4000 checkpoint). It was trained for 1,024 more updates with the full text backbone unfrozen and labels from a larger cross-encoder teacher. The architecture, scoring rule and input limits are unchanged. This is a research release.
 
-[Model card](https://huggingface.co/dotproductx/breadbowl-embed-v1.3) · [Source code and toolkit](https://github.com/BreadBowlAI/breadbowl-embed) · [v1.2-preview](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview)
+[Model card](https://huggingface.co/dotproductx/breadbowl-embed-v1.3) · [Paper (PDF)](https://huggingface.co/dotproductx/breadbowl-embed-v1.3/blob/main/paper/breadbowl-embed-v1.3.pdf) · [Source code and toolkit](https://github.com/BreadBowlAI/breadbowl-embed) · [v1.2-preview](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview)
 
 ## What it is, and how it differs
 
@@ -271,6 +271,40 @@ At width 128 most queries get fewer than 100 candidates, because different query
 
 Reading the table: on the same candidates QKV is above QK on all three sets. It is below the 0.6B cross-encoder on MS MARCO dev and above it on DL19 and DL20, and below the 4B cross-encoder on all three. DL19 and DL20 have 43 and 54 queries, so their differences are noisy. MS MARCO is in the training data (see [Training](#training-lineage-and-data)), so none of these results is zero-shot.
 
+### Against two-model pipelines and on BEIR
+
+From the [paper](https://huggingface.co/dotproductx/breadbowl-embed-v1.3/blob/main/paper/breadbowl-embed-v1.3.pdf), same full corpus and protocol. nDCG@10 × 100; ▼ significantly below v1.3 (95% paired bootstrap over queries, 10,000 resamples, not corrected for multiple comparisons); unmarked entries are level with it. Rerank: time per query on one RTX 5090; cross-encoder times are candidates divided by measured batch throughput, which favors them.
+
+| System | Rerank (ms) | MS MARCO dev | DL19 | DL20 |
+| --- | ---: | ---: | ---: | ---: |
+| **v1.3 (one model)** | **2.9** | **41.7** | **74.6** | **73.1** |
+| Qwen3-Embedding-0.6B | — | 38.0 ▼ | 66.8 ▼ | 67.6 ▼ |
+| Qwen3-Embedding-0.6B + Qwen3-Reranker-0.6B | 200 | 41.9 | 72.0 | 67.6 ▼ |
+| Qwen3-Embedding-0.6B + Qwen3-Reranker-4B | 870 | 44.4 ▲ | 74.5 | 74.6 |
+| Jina v5 text-small | — | 42.1 | 70.6 | 72.0 |
+| Jina v5 text-small + Qwen3-Reranker-0.6B | 200 | 42.0 | 72.6 | 66.8 ▼ |
+| Jina v5 text-small + Qwen3-Reranker-4B | 880 | 44.5 ▲ | 73.9 | 74.4 |
+| Routing-only control (16 vectors, same training) | — | 41.6 | 73.0 ▼ | 72.1 |
+
+▲ significantly above v1.3. Against the released systems of similar size (all rows without the 4B cross-encoder, plus the 0.6B cross-encoder on v1.3's own candidates): 15 comparisons, 6 significant wins, 9 level, no loss. On v1.3's own candidates the 0.6B cross-encoder needs 150 ms against v1.3's 2.9 ms (warm file cache; about 11 ms cold).
+
+**Routing-only control.** The same model trained for the routing score alone (same start, data, order, teacher labels, seed and learning rates), storing 16 vectors per passage instead of 32. v1.3 minus control: MS MARCO +0.07 [−0.24, +0.38], DL19 **+1.66** [+0.04, +3.37], DL20 +1.01 [−0.50, +2.58], mean of 14 BEIR tasks **+0.68** [+0.45, +0.91].
+
+**BEIR**, nDCG@10 × 100, same pipeline settings:
+
+| Task | QK | QKV | Task | QK | QKV |
+| --- | ---: | ---: | --- | ---: | ---: |
+| ArguAna | 53.3 | 50.5 | NFCorpus | 37.3 | 37.8 |
+| CQADupStack | 45.3 | 45.0 | NQ | 53.8 | 61.8 |
+| Climate-FEVER | 32.2 | 42.2 | Quora | 87.9 | 87.3 |
+| DBPedia-Entity | 43.1 | 45.0 | SCIDOCS | 22.1 | 22.3 |
+| FEVER | 87.8 | 90.5 | SciFact | 73.7 | 74.6 |
+| FiQA | 41.2 | 42.5 | TREC-COVID | 75.0 | 82.1 |
+| HotpotQA | 69.2 | 73.3 | Touché-2020 | 22.6 | 30.2 |
+| MS MARCO | 39.3 | 41.7 | **Mean, 15 tasks** | **52.3** | **55.1** |
+
+The value score raises nDCG@10 on 12 of 15 tasks. For context, the Jina v5 paper reports 15-task means of 55.5 for Qwen3-Embedding-0.6B and 56.7 for Jina v5 text-small, under settings not matched to these.
+
 ### Development panel
 
 5,000 held-out development queries over nine prepared sources, each with 100 saved candidates mined by an earlier checkpoint of this lineage. Every system ranks the same lists, so this measures ranking on fixed candidates, not retrieval. Source-macro nDCG@10 × 100:
@@ -292,8 +326,8 @@ Measured on the MS MARCO evaluation's stored passage vectors, through the evalua
 | --- | ---: | --- | --- | --- |
 | float32 | 32,768 | 39.30 / 41.71 / 84.46 | 71.56 / 74.63 / 57.01 | 68.73 / 73.14 / 63.71 |
 | int8, per-vector scale | 8,256 | 39.31 / 41.70 / 84.47 | 71.56 / 74.64 / 57.01 | 68.86 / 73.14 / 63.74 |
-| float16 | 16,384 | not yet measured | not yet measured | not yet measured |
-| int4, per-vector scale | 4,160 | not yet measured | not yet measured | not yet measured |
+| float16 | 16,384 | 39.30 / 41.71 / 84.46 | 71.56 / 74.63 / 57.01 | 68.73 / 73.14 / 63.71 |
+| int4, per-vector scale | 4,160 | 39.37 / 41.64 / 84.37 | 71.55 / 74.51 / 57.17 | 68.53 / 73.12 / 63.46 |
 
 Bytes cover the 16 routing and 16 value vectors of 256 dimensions, excluding index structures and metadata. int8 and int4 scale each vector by its largest magnitude; the scale is stored for value vectors only, since routing vectors are compared by cosine. Query vectors stay float32. At float32, 32 KiB per passage is eight times the 4 KiB of a single 1,024-dimensional float32 vector.
 
@@ -312,7 +346,7 @@ Bytes cover the 16 routing and 16 value vectors of 256 dimensions, excluding ind
 
 Accuracy of the served rankings: MS MARCO dev (those 1,000 queries) QK 39.16, QKV 41.88, R@100 85.83; DL19 71.78 / 74.70 / 57.02; DL20 68.73 / 73.15 / 63.48. Exact search dominates the time. For reference, the cross-encoder runs above, on the same GPUs, rescored 466.93–486.15 query–passage pairs per second per GPU (Qwen3-Reranker-0.6B) and 94.27–111.52 (Qwen3-Reranker-4B). That is batch throughput, not per-query latency, so it does not compare directly with the table.
 
-Not yet measured: float16 and int4 storage accuracy, and approximate search (an IVF-PQ index over all routing vectors in front of the same exact rescoring).
+**Approximate search** (from the paper): with an IVF-PQ index over all 141M routing vectors on one RTX 5090 in front of the same exact rescoring, a query takes 43 ms end to end (34 ms query encoding, 5.7 ms retrieval, 2.9 ms rerank). Against exact search the index costs at most 0.54 nDCG@10 points. float16 and int4 rows above are from the paper's storage table (exact search).
 
 ### CPU timings (toolkit)
 
@@ -373,13 +407,13 @@ Not intended for: production search without your own evaluation on your data; no
 
 ## Limitations
 
-- **Narrow test evidence.** For this checkpoint only MS MARCO dev, DL19 and DL20 have been run. BEIR has not been run, and neither have same-protocol baselines (single-vector retrievers, ColBERT-style models, or another retriever followed by a cross-encoder).
-- **Not state of the art on BEIR.** v1.2-preview scored 51.54 macro nDCG@10 on 15 BEIR tasks (QKV), against a published 55.52 for Qwen3-Embedding-0.6B; protocols differ. v1.3's BEIR score is unknown.
+- **Narrow test evidence.** MS MARCO dev, DL19, DL20 and 15 BEIR tasks, one run each. ColBERTv2 and ConstBERT were not run under this protocol.
+- **Not state of the art on BEIR.** v1.3 averages 55.1 on 15 BEIR tasks; the Jina v5 paper reports 55.5 for Qwen3-Embedding-0.6B and 56.7 for Jina v5 text-small (settings not matched). The value score lowers ArguAna, Quora and CQADupStack.
 - **In-domain test sets.** MS MARCO training queries and passages are part of the training data, and query overlap with MS MARCO dev and TREC DL has not been fully audited. Do not read these results as zero-shot.
 - **Shortlist underfill.** At the reported width of 128, 4,964 of 6,980 MS MARCO dev queries, 31 of 43 DL19 queries and 43 of 54 DL20 queries had fewer than 100 candidates, more than for v1.2. Recall@100 at width 128 is measured on these shorter lists.
 - **Small query sets and one run.** DL19 and DL20 have 43 and 54 queries; one training seed; the development panel informed many earlier decisions.
-- **Remaining gap to a larger cross-encoder.** On identical candidates, Qwen3-Reranker-4B scores above QKV on MS MARCO dev, DL19 and DL20, and Qwen3-Reranker-0.6B scores above it on MS MARCO dev.
-- **Storage.** 32,768 bytes per passage at float32; int8 (8,256 bytes) is measured above. float16, int4 and approximate search are not yet measured. The GPU latency figures cover exact search on four GPUs; the CPU figures cover the toolkit on one 16-core CPU.
+- **Remaining gap to a larger cross-encoder.** On identical candidates, Qwen3-Reranker-4B scores above QKV on all three sets, significantly only on MS MARCO dev (by 2.9 points). Qwen3-Reranker-0.6B is level on MS MARCO dev and DL19 and significantly below on DL20.
+- **Storage.** 32,768 bytes per passage at float32; float16, int8 and int4 are measured above (int4: 4,160 bytes, at most 0.12 nDCG@10 points lower). The exact-search latency figures use four GPUs; the approximate-search figure one GPU, and it was not measured on the int4 store; the CPU figures cover the toolkit on one 16-core CPU.
 - **English only.** Training data is English. Other languages have not been evaluated.
 - **Toolkit scope.** The toolkit's `Index` runs the evaluated per-slot shortlist pipeline (`paper` profile) with exact slot search on CPU or flat FAISS, over in-memory or memory-mapped shards; it has no approximate search, metadata filtering or server. The training pipeline and the evaluation harness are not in the toolkit.
 - **Truncation.** Queries over 128 tokens (including the instruction) and passages over 384 tokens are truncated.

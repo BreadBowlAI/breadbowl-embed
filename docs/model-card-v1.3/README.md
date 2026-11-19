@@ -41,6 +41,12 @@ model-index:
 
 An English retrieval model that stores each passage once, and uses the same stored vectors to find candidates and to rerank them.
 
+- **As good as two models.** Level with Qwen3-Embedding-0.6B + Qwen3-Reranker-0.6B on MS MARCO and DL19, **+5.5 nDCG@10 on DL20**.
+- **About 50× faster rerank.** 2.9 ms against 150 ms per query, same candidates, same GPU.
+- **6 wins, 9 level, 0 losses** against released systems of similar size.
+
+📄 **Paper:** [BreadBowl-Embed: Encode Once, Retrieve and Rerank](paper/breadbowl-embed-v1.3.pdf) (PDF)
+
 ![Diagram. A query or passage goes through the backbone, Qwen3.5 0.8B, and becomes 16 slots, stored once per passage. Each slot has a routing vector (256-d, finds candidates) and a value vector (256-d, reranks). Score equals 0.75 times routing plus 0.25 times value. No second model at rerank time.](assets/architecture.png)
 
 ## How it works
@@ -81,17 +87,21 @@ More examples (rerank a list, save an index, explain a score) are in the [librar
 
 ![Bar chart of nDCG@10 on MS MARCO dev, TREC DL19 and TREC DL20. v1.3 is higher than v1.2-preview on all three. The values are in the table below.](assets/benchmarks.png)
 
-| nDCG@10 | MS MARCO dev | TREC DL19 | TREC DL20 |
-| --- | ---: | ---: | ---: |
-| **v1.3** | **41.71** | **74.63** | **73.14** |
-| v1.2-preview | 34.27 | 68.99 | 59.57 |
-| Qwen3-Reranker-0.6B, same candidates | 42.36 | 72.80 | 69.44 |
-| Qwen3-Reranker-4B, same candidates | 44.62 | 75.29 | 75.30 |
+| nDCG@10 | Models | Rerank | MS MARCO dev | TREC DL19 | TREC DL20 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **v1.3** | **1** | **2.9 ms** | **41.7** | **74.6** | **73.1** |
+| Qwen3-Embedding-0.6B + Qwen3-Reranker-0.6B | 2 | 200 ms | 41.9 | 72.0 | 67.6 ▼ |
+| Jina v5 text-small + Qwen3-Reranker-0.6B | 2 | 200 ms | 42.0 | 72.6 | 66.8 ▼ |
+| Qwen3-Embedding-0.6B alone | 1 | — | 38.0 ▼ | 66.8 ▼ | 67.6 ▼ |
+| Qwen3-Reranker-4B on v1.3's candidates | 2 | 660 ms | 44.6 ▲ | 75.3 | 75.3 |
+| v1.2-preview | 1 | — | 34.3 | 69.0 | 59.6 |
 
 - **Setup:** full MS MARCO corpus (8.8 million passages), `paper` search profile, each test set scored once.
-- **Cross-encoder rows** rerank v1.3's own candidate lists, so only the ordering differs.
-- **Storage:** 32,768 bytes per passage in float32. int8 needs 8,256 bytes and scores almost the same.
-- **Speed:** 172 ms per query end to end (median), exact search over the whole corpus on four GPUs.
+- **▼ / ▲** significantly below / above v1.3 (95% paired bootstrap). Unmarked: level.
+- **Rerank** per query on one RTX 5090. Cross-encoder times use measured batch throughput, which favors them.
+- **BEIR:** 55.1 mean nDCG@10 over 15 tasks. The value vectors lift 12 of the 15.
+- **Storage:** 32,768 bytes per passage in float32. int4 needs 4,160 bytes and loses at most 0.12 points.
+- **Speed:** 43 ms per query end to end with an approximate index on one GPU; 172 ms with exact search over the whole corpus.
 - **New in v1.3:** 1,024 more training updates, with the full backbone unfrozen and a larger teacher.
 
 ## Look inside
@@ -115,8 +125,9 @@ Pick one with `index.search(query, profile="paper")`.
 ## Limits and licence
 
 - **English only.** Queries are cut at 128 tokens (instruction included), passages at 384. Split long documents.
-- **Small, in-domain tests.** MS MARCO is in the training data. DL19 and DL20 have only 43 and 54 queries. One training run. BEIR has not been run for v1.3.
-- **Not ahead of a large cross-encoder.** Qwen3-Reranker-4B scores higher on all three sets.
+- **Small, in-domain tests.** MS MARCO is in the training data. DL19 and DL20 have only 43 and 54 queries. One training run.
+- **Not ahead of a large cross-encoder.** Qwen3-Reranker-4B, five times larger, is significantly ahead on MS MARCO.
+- **Not top of BEIR.** Qwen3-Embedding-0.6B (55.5) and Jina v5 text-small (56.7) report higher 15-task means, under other settings. Weakest on argument retrieval (ArguAna).
 - **Cost.** On a 16-core desktop CPU (bfloat16): about 70 ms per query, 2.7 passages per second. CUDA is not yet validated in the library.
 - **Precision.** Results were measured in bfloat16. Load with `dtype="bfloat16"` to match; the float32 default scores slightly differently.
 - Scores rank candidates; they are not probabilities. This is a research release.
@@ -125,6 +136,7 @@ Pick one with `index.search(query, profile="paper")`.
 
 ## Links
 
+- Paper: [paper/breadbowl-embed-v1.3.pdf](paper/breadbowl-embed-v1.3.pdf)
 - Code: [github.com/BreadBowlAI/breadbowl-embed](https://github.com/BreadBowlAI/breadbowl-embed)
-- Full details (evaluation, storage, speed, training data, citation): [model-details-v1.3.md](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/model-details-v1.3.md)
+- Full details (evaluation, BEIR per task, storage, speed, training data, citation): [model-details-v1.3.md](https://github.com/BreadBowlAI/breadbowl-embed/blob/main/docs/model-details-v1.3.md)
 - Previous version: [v1.2-preview](https://huggingface.co/dotproductx/breadbowl-embed-v1.2-preview)
